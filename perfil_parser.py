@@ -93,14 +93,92 @@ CAREER_FAMILIES = [
 # perfil de cargo.
 KNOWN_CAREERS = [variant for family in CAREER_FAMILIES for variant in family]
 
-DEFAULT_RRLL_KEYWORDS = [
-    "sindicato",
-    "sindical",
-    "negociación colectiva",
-    "relaciones laborales",
-    "convenio colectivo",
-    "dirigentes sindicales",
-]
+# Palabras clave agrupadas por área/competencia funcional. Antes solo existía
+# el grupo de RRLL/sindicatos, lo que dejaba afuera cargos de Ventas,
+# Marketing, Finanzas, etc. Ahora se detecta automáticamente qué área(s)
+# menciona el perfil de cargo y se sugieren las palabras clave de esa(s)
+# área(s) (el campo sigue siendo editable a mano en la interfaz).
+COMPETENCY_KEYWORD_GROUPS = {
+    "rrll": [
+        "sindicato",
+        "sindical",
+        "negociación colectiva",
+        "relaciones laborales",
+        "convenio colectivo",
+        "dirigentes sindicales",
+    ],
+    "ventas": [
+        "ventas",
+        "vendedor",
+        "cartera de clientes",
+        "metas de venta",
+        "cuota de venta",
+        "kpi comercial",
+        "gestión comercial",
+        "fuerza de venta",
+    ],
+    "marketing": [
+        "marketing",
+        "branding",
+        "campañas de marketing",
+        "redes sociales",
+        "posicionamiento de marca",
+        "marketing digital",
+    ],
+    "proyectos": [
+        "gestión de proyectos",
+        "project management",
+        "pmp",
+        "metodologías ágiles",
+        "scrum",
+        "kanban",
+        "planificación de proyectos",
+    ],
+    "administracion": [
+        "administración",
+        "gestión administrativa",
+        "procesos administrativos",
+        "gestión de contratos",
+    ],
+    "finanzas": [
+        "finanzas",
+        "presupuesto",
+        "flujo de caja",
+        "análisis financiero",
+        "estados financieros",
+        "planificación financiera",
+    ],
+    "contabilidad": [
+        "contabilidad",
+        "conciliación bancaria",
+        "tributario",
+        "normas ifrs",
+        "libros contables",
+        "impuestos",
+    ],
+    "rrhh": [
+        "reclutamiento",
+        "selección de personal",
+        "capacitación",
+        "desarrollo organizacional",
+        "compensaciones",
+        "clima laboral",
+        "recursos humanos",
+    ],
+    "legal": [
+        "normativa legal",
+        "cumplimiento normativo",
+        "compliance",
+        "contratos legales",
+        "asesoría legal",
+    ],
+    "tecnologia": [
+        "desarrollo de software",
+        "infraestructura ti",
+        "sistemas de información",
+        "tecnologías de la información",
+    ],
+}
 
 DEFAULT_INDUSTRIA_KEYWORDS = [
     "industrial",
@@ -115,6 +193,22 @@ DEFAULT_INDUSTRIA_KEYWORDS = [
     "agroindustria",
     "logística",
 ]
+
+
+def _detect_area_keywords(text_lower):
+    """Revisa qué grupo(s) de competencia menciona el perfil de cargo
+    (ventas, marketing, RRHH, finanzas, etc.) y devuelve la lista combinada
+    de palabras clave de esos grupos. Si el perfil no menciona ninguno,
+    devuelve una lista vacía (igual que antes: el campo queda vacío para no
+    sumar puntaje por coincidencias irrelevantes)."""
+    detected = []
+    for keywords in COMPETENCY_KEYWORD_GROUPS.values():
+        if any(kw in text_lower for kw in keywords):
+            for kw in keywords:
+                if kw not in detected:
+                    detected.append(kw)
+    return detected
+
 
 SALARY_RE = re.compile(r"\$?\s?([\d][\d\.]{5,10})")
 
@@ -135,6 +229,11 @@ FORMACION_TRIGGER_WORDS = [
     "nivel educacional",
     "educación",
     "educacion",
+    "requisitos",
+    "se requiere",
+    "excluyente",
+    "importante contar con",
+    "deseable contar con",
 ]
 
 # Patrones genéricos de nombres de carrera, para detectar formaciones que NO
@@ -211,7 +310,7 @@ def parse_requirements(full_text):
 
     salario_min, salario_max = _extract_salary_range(full_text)
 
-    # Igual que con la formación: las palabras clave de RRLL/sindicatos e
+    # Igual que con la formación: las palabras clave de área/competencia e
     # industria solo se autocompletan si el PROPIO perfil de cargo las
     # menciona. La mayoría de los cargos no tienen relación con sindicatos
     # ni con una industria específica, y llenar esos campos "por defecto"
@@ -219,12 +318,12 @@ def parse_requirements(full_text):
     # coincidencias irrelevantes. Si el cargo sí lo requiere, quedan
     # detectadas automáticamente; si no, el campo queda vacío (y se puede
     # completar a mano en la interfaz si aplica).
-    rrll_relevante = any(kw in text_lower for kw in DEFAULT_RRLL_KEYWORDS)
+    area_keywords = _detect_area_keywords(text_lower)
     industria_relevante = any(kw in text_lower for kw in DEFAULT_INDUSTRIA_KEYWORDS)
 
     return {
         "formacion_excluyente": formacion_excluyente,
-        "rrll_keywords": list(DEFAULT_RRLL_KEYWORDS) if rrll_relevante else [],
+        "area_keywords": area_keywords,
         "industria_keywords": list(DEFAULT_INDUSTRIA_KEYWORDS)
         if industria_relevante
         else [],
