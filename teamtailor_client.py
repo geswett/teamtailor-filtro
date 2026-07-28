@@ -293,11 +293,15 @@ class TeamTailorClient:
     # Escritura de vuelta hacia Team Tailor
     # ------------------------------------------------------------------
     def add_note(self, candidate_id, body):
-        """Agrega un comentario/nota visible en la ficha del candidato."""
+        """Agrega un comentario/nota visible en la ficha del candidato.
+
+        Según la documentación de Team Tailor, el atributo del texto de la
+        nota se llama 'note' (no 'text').
+        """
         payload = {
             "data": {
                 "type": "notes",
-                "attributes": {"text": body},
+                "attributes": {"note": body},
                 "relationships": {
                     "candidate": {"data": {"type": "candidates", "id": candidate_id}}
                 },
@@ -314,3 +318,19 @@ class TeamTailorClient:
         atributo antes de usar esto en producción).
         """
         current = self._get(f"/candidates/{candidate_id}")
+        attrs = current.get("data", {}).get("attributes", {})
+        existing = attrs.get("tag-list") or attrs.get("tags") or []
+        if isinstance(existing, str):
+            existing_set = {t.strip() for t in existing.split(",") if t.strip()}
+        else:
+            existing_set = set(existing or [])
+        existing_set.add(tag)
+
+        payload = {
+            "data": {
+                "type": "candidates",
+                "id": candidate_id,
+                "attributes": {"tag-list": sorted(existing_set)},
+            }
+        }
+        return self._patch(f"/candidates/{candidate_id}", payload)
