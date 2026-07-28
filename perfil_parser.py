@@ -145,10 +145,23 @@ def parse_requirements(full_text):
 
     salario_min, salario_max = _extract_salary_range(full_text)
 
+    # Igual que con la formación: las palabras clave de RRLL/sindicatos e
+    # industria solo se autocompletan si el PROPIO perfil de cargo las
+    # menciona. La mayoría de los cargos no tienen relación con sindicatos
+    # ni con una industria específica, y llenar esos campos "por defecto"
+    # sin que el perfil lo pida le sumaba puntaje a candidatos por
+    # coincidencias irrelevantes. Si el cargo sí lo requiere, quedan
+    # detectadas automáticamente; si no, el campo queda vacío (y se puede
+    # completar a mano en la interfaz si aplica).
+    rrll_relevante = any(kw in text_lower for kw in DEFAULT_RRLL_KEYWORDS)
+    industria_relevante = any(kw in text_lower for kw in DEFAULT_INDUSTRIA_KEYWORDS)
+
     return {
         "formacion_excluyente": formacion_excluyente,
-        "rrll_keywords": list(DEFAULT_RRLL_KEYWORDS),
-        "industria_keywords": list(DEFAULT_INDUSTRIA_KEYWORDS),
+        "rrll_keywords": list(DEFAULT_RRLL_KEYWORDS) if rrll_relevante else [],
+        "industria_keywords": list(DEFAULT_INDUSTRIA_KEYWORDS)
+        if industria_relevante
+        else [],
         "salario_min": salario_min,
         "salario_max": salario_max,
         "raw_text_preview": full_text[:4000],
