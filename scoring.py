@@ -1,337 +1,157 @@
 """
-Cliente simple para la API pública de Team Tailor (JSON:API).
+Motor de comparación candidato vs. perfil de cargo, basado en reglas y
+palabras clave (sin IA). Es un primer filtro rápido, no un reemplazo del
+juicio del reclutador: los candidatos "Alto" y "Medio" igual deben revisarse
+a mano antes de avanzarlos de etapa.
 
-Documentación oficial: https://docs.teamtailor.com/
-- Auth: header Authorization: Token token=<API_KEY>
-- Header obligatorio: X-Api-Version: <fecha_version>
-- Base URL EU: https://api.teamtailor.com
-- Base URL NA: https://api.na.teamtailor.com
-
-NOTA IMPORTANTE: este cliente fue escrito siguiendo la documentación pública de
-Team Tailor, pero no pudo probarse contra una cuenta real (el entorno donde se
-escribió no tenía salida de red hacia api.teamtailor.com). Antes de usarlo en
-producción, pruébenlo primero contra una vacante de prueba y revisen los
-nombres de atributos (algunos pueden variar levemente según la versión de API
-o configuración de la cuenta, especialmente en add_tag()).
+Fuentes de texto usadas por candidato (en ese orden de prioridad):
+- candidate.attributes["resume-summary"]  -> resumen de CV generado por
+  Team Tailor (Co-pilot), si ya fue generado.
+- candidate.attributes["pitch"]           -> carta de motivación / resumen
+  que el candidato dejó al postular.
+- respuestas (answers) del formulario de postulación.
 """
 
-import os
-import time
+import re
 
-import requests
+YEARS_RE = re.compile(r"(\d{1,2})\s*años")
+DIGITS_RE = re.compile(r"[^\d]")
 
 
-class TeamTailorClient:
-    # Team Tailor limita a 50 requests cada 10 segundos. Con muchos
-    # candidatos hacemos varias llamadas por candidato (respuestas + nota),
-    # así que reintentamos con espera cuando llega un 429 y espaciamos un
-    # poco cada llamada para no volver a pasarnos del límite.
-    RATE_LIMIT_MAX_RETRIES = 5
-    MIN_DELAY_BETWEEN_REQUESTS = 0.2  # segundos
+def _answer_text(answer):
+    if not answer:
+        return "", ""
+    attrs = answer.get("attributes", {})
+    question = str(attrs.get("question") or attrs.get("body") or "")
 
-    def __init__(self, token=None, stack=None, api_version=None):
-        self.token = token or os.environ.get("TEAMTAILOR_API_TOKEN")
-        stack = (stack or os.environ.get("TEAMTAILOR_STACK", "eu")).lower()
-        self.base_url = (
-            "https://api.na.teamtailor.com/v1"
-            if stack == "na"
-            else "https://api.teamtailor.com/v1"
-        )
-        self.api_version = api_version or os.environ.get(
-            "TEAMTAILOR_API_VERSION", "20240904"
-        )
+    # El valor de la respuesta puede venir en distintos atributos según el
+    # tipo de pregunta en Team Tailor: texto libre ("text"), rango numérico
+    # ("range", ej. un slider de renta esperada), selección múltiple
+    # ("choices") o sí/no ("boolean"). Probamos en ese orden.
+    if attrs.get("text"):
+        text = str(attrs.get("text"))
+    elif attrs.get("answer"):
+        text = str(attrs.get("answer"))
+    elif attrs.get("range") is not None:
+        text = str(attrs.get("range"))
+    elif attrs.get("choices"):
+        text = ", ".join(str(c) for c in attrs.get("choices"))
+    elif attrs.get("boolean") is not None:
+        text = "Sí" if attrs.get("boolean") else "No"
+    else:
+        text = ""
 
-        if not self.token:
-            raise RuntimeError(
-                "Falta TEAMTAILOR_API_TOKEN. Configúralo en el archivo .env "
-                "(ver .env.example)."
-            )
+    return question, text
 
-    def _headers(self, with_body=False):
-        headers = {
-            "Authorization": f"Token token={self.token}",
-            "X-Api-Version": self.api_version,
-            "Accept": "application/vnd.api+json",
-        }
-        if with_body:
-            headers["Content-Type"] = "application/vnd.api+json"
-        return headers
 
-    def _request(self, method, url, **kwargs):
-        """Hace la llamada HTTP con reintento automático si Team Tailor
-        responde 429 (rate limit), y una pequeña pausa entre llamadas para
-        no volver a pasarnos del límite (50 requests / 10 segundos)."""
-        last_response = None
-        for attempt in range(self.RATE_LIMIT_MAX_RETRIES + 1):
-            time.sleep(self.MIN_DELAY_BETWEEN_REQUESTS)
-            r = requests.request(method, url, timeout=30, **kwargs)
-            last_response = r
-            if r.status_code != 429:
-                return r
-            wait_s = 2.0
-            reset_header = r.headers.get("X-Rate-Limit-Reset")
-            if reset_header:
-                try:
-                    wait_s = max(float(reset_header), 1.0)
-                except ValueError:
-                    pass
-            time.sleep(wait_s)
-        return last_response
+def _candidate_text(candidate, answers):
+    parts = []
+    if candidate:
+        attrs = candidate.get("attributes", {})
+        for field in ("resume-summary", "pitch"):
+            val = attrs.get(field)
+            if val:
+                parts.append(str(val))
+    for a in answers:
+        _, text = _answer_text(a)
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
 
-    @staticmethod
-    def _error_message(r, method, path):
-        body = r.text[:500] if r.text else "(cuerpo vacío)"
-        content_type = r.headers.get("Content-Type", "?")
-        return (
-            f"Team Tailor API error {r.status_code} {r.reason or ''} en {method} {path}. "
-            f"Content-Type respuesta: {content_type}. Cuerpo: {body}"
-        )
 
-    def _get(self, path, params=None):
-        r = self._request(
-            "GET",
-            f"{self.base_url}{path}",
-            headers=self._headers(),
-            params=params,
-        )
-        if not r.ok:
-            raise RuntimeError(self._error_message(r, "GET", path))
-        return r.json()
+SALARY_QUESTION_KEYWORDS = [
+    "renta",
+    "sueldo",
+    "pretensión",
+    "pretension",
+    "expectativa salarial",
+    "expectativas salariales",
+    "aspiración salarial",
+    "aspiracion salarial",
+    "remuneración",
+    "remuneracion",
+    "salario",
+    "líquido esperado",
+    "liquido esperado",
+]
 
-    def _get_url(self, url):
-        r = self._request("GET", url, headers=self._headers())
-        if not r.ok:
-            raise RuntimeError(self._error_message(r, "GET", url))
-        return r.json()
 
-    def _post(self, path, payload):
-        r = self._request(
-            "POST",
-            f"{self.base_url}{path}",
-            headers=self._headers(with_body=True),
-            json=payload,
-        )
-        if not r.ok:
-            raise RuntimeError(self._error_message(r, "POST", path))
-        return r.json() if r.text else {}
+def _extract_salary(answers):
+    for a in answers:
+        question, text = _answer_text(a)
+        q_lower = question.lower()
+        if any(kw in q_lower for kw in SALARY_QUESTION_KEYWORDS):
+            digits = DIGITS_RE.sub("", text)
+            if digits.isdigit() and len(digits) >= 6:
+                return int(digits)
+    return None
 
-    def _patch(self, path, payload):
-        r = self._request(
-            "PATCH",
-            f"{self.base_url}{path}",
-            headers=self._headers(with_body=True),
-            json=payload,
-        )
-        if not r.ok:
-            raise RuntimeError(self._error_message(r, "PATCH", path))
-        return r.json() if r.text else {}
 
-    # ------------------------------------------------------------------
-    # Procesos (jobs) y etapas (stages)
-    # ------------------------------------------------------------------
-    def list_jobs(self, status=None):
-        """Lista simplificada de vacantes ('procesos').
+def score_candidate(candidate, answers, requirements):
+    text = _candidate_text(candidate, answers)
+    text_lower = text.lower()
 
-        No filtramos por status vía la API: en esta cuenta de Team Tailor el
-        filtro filter[status]=open no es un valor aceptado (varía según
-        configuración de la cuenta). Traemos todos los jobs y, si se pide un
-        status, filtramos localmente sobre el atributo ya devuelto.
-        """
-        jobs = []
-        params = {"page[size]": 30}
-        data = self._get("/jobs", params=params)
-        jobs.extend(data.get("data", []))
+    formacion_list = requirements.get("formacion_excluyente") or []
+    formacion_hits = [c for c in formacion_list if c.lower() in text_lower]
+    formacion_ok = bool(formacion_hits) if formacion_list else None
 
-        next_link = data.get("links", {}).get("next")
-        while next_link:
-            data = self._get_url(next_link)
-            jobs.extend(data.get("data", []))
-            next_link = data.get("links", {}).get("next")
+    rrll_list = requirements.get("rrll_keywords") or []
+    rrll_hits = [k for k in rrll_list if k.lower() in text_lower]
 
-        result = [
-            {
-                "id": j["id"],
-                "title": j.get("attributes", {}).get("title"),
-                "status": j.get("attributes", {}).get("status"),
-            }
-            for j in jobs
-        ]
-        if status:
-            result = [j for j in result if j.get("status") == status]
-        return result
+    industria_list = requirements.get("industria_keywords") or []
+    industria_hits = [k for k in industria_list if k.lower() in text_lower]
 
-    def list_stages(self, job_id):
-        data = self._get("/stages", params={"filter[job]": job_id, "page[size]": 30})
-        stages = data.get("data", [])
-        return [
-            {
-                "id": s["id"],
-                "name": s.get("attributes", {}).get("name"),
-                "active_count": s.get("attributes", {}).get(
-                    "active-job-applications-count"
-                ),
-            }
-            for s in stages
-        ]
+    years_matches = YEARS_RE.findall(text_lower)
+    years = max((int(y) for y in years_matches), default=None)
 
-    # ------------------------------------------------------------------
-    # Candidaturas (job-applications) de una etapa
-    # ------------------------------------------------------------------
-    def list_job_applications(self, job_id, stage_id, only_active=True):
-        """Trae las candidaturas de una etapa, con el candidato incluido.
+    renta = _extract_salary(answers)
+    salario_max = requirements.get("salario_max")
+    presupuesto_ok = True
+    if renta and salario_max:
+        presupuesto_ok = renta <= salario_max * 1.15  # 15% de margen de negociación
 
-        Por defecto excluye candidaturas rechazadas (atributo `rejected-at`
-        no nulo): esto se filtra localmente porque `filter[status]` de
-        job-applications no está documentado/soportado de forma confiable en
-        todas las cuentas, a diferencia del atributo `rejected-at` que sí
-        viene siempre en la respuesta.
+    score = 0
+    if formacion_ok is True:
+        score += 3
+    elif formacion_ok is False:
+        score -= 1
+    score += min(len(rrll_hits), 3)
+    score += min(len(industria_hits), 2)
+    if years is not None and years >= 10:
+        score += 1
+    if renta and salario_max:
+        score += 1 if presupuesto_ok else -2
 
-        Nota: 'answers' NO es una relación válida de job-applications en la
-        API de Team Tailor (solo lo son candidate, job, stage, reject-reason).
-        Las respuestas del formulario de postulación viven en el candidato
-        (relación 'answers' de /candidates/{id}), así que se piden aparte,
-        una consulta por candidato, vía get_candidate_answers().
-        """
-        applications = []
-        params = {
-            "filter[job]": job_id,
-            "filter[stage]": stage_id,
-            "include": "candidate",
-            "page[size]": 30,
-        }
-        data = self._get("/job-applications", params=params)
-        applications.extend(self._merge_included(data))
+    if score >= 7:
+        tier = "Alto"
+    elif score >= 4:
+        tier = "Medio"
+    else:
+        tier = "Bajo"
 
-        next_link = data.get("links", {}).get("next")
-        while next_link:
-            data = self._get_url(next_link)
-            applications.extend(self._merge_included(data))
-            next_link = data.get("links", {}).get("next")
+    return {
+        "tier": tier,
+        "score": score,
+        "formacion_ok": formacion_ok,
+        "formacion_hits": formacion_hits,
+        "rrll_hits": rrll_hits,
+        "industria_hits": industria_hits,
+        "years_detected": years,
+        "renta_esperada": renta,
+        "presupuesto_ok": presupuesto_ok,
+        "text_used_preview": text[:500],
+    }
 
-        if only_active:
-            applications = [a for a in applications if not a.get("rejected_at")]
 
-        for app_data in applications:
-            candidate = app_data.get("candidate")
-            if candidate:
-                try:
-                    app_data["answers"] = self.get_candidate_answers(candidate["id"])
-                except Exception:
-                    app_data["answers"] = []
-            else:
-                app_data["answers"] = []
-
-        return applications
-
-    def get_candidate_answers(self, candidate_id):
-        """Trae las respuestas del formulario de postulación de un candidato,
-        con el texto de la pregunta ya incrustado en attributes['question']
-        (para que scoring.py pueda leerlo directo)."""
-        data = self._get(
-            f"/candidates/{candidate_id}", params={"include": "answers,questions"}
-        )
-        included = data.get("included", [])
-        included_map = {(i["type"], i["id"]): i for i in included}
-        candidate_data = data.get("data", {})
-        answer_refs = (
-            candidate_data.get("relationships", {}).get("answers", {}).get("data", [])
-            or []
-        )
-
-        results = []
-        for ref in answer_refs:
-            answer = included_map.get((ref["type"], ref["id"]))
-            if not answer:
-                continue
-            q_ref = (answer.get("relationships", {}).get("question", {}) or {}).get(
-                "data"
-            )
-            question = (
-                included_map.get((q_ref["type"], q_ref["id"])) if q_ref else None
-            )
-            q_attrs = question.get("attributes", {}) if question else {}
-            question_text = (
-                q_attrs.get("body") or q_attrs.get("title") or q_attrs.get("text") or ""
-            )
-
-            answer_copy = dict(answer)
-            attrs_copy = dict(answer.get("attributes", {}))
-            attrs_copy["question"] = question_text
-            answer_copy["attributes"] = attrs_copy
-            results.append(answer_copy)
-
-        return results
-
-    @staticmethod
-    def _merge_included(data):
-        included = {(i["type"], i["id"]): i for i in data.get("included", [])}
-        results = []
-        for app in data.get("data", []):
-            candidate_ref = (
-                app.get("relationships", {}).get("candidate", {}).get("data")
-            )
-            candidate = (
-                included.get((candidate_ref["type"], candidate_ref["id"]))
-                if candidate_ref
-                else None
-            )
-            answer_refs = (
-                app.get("relationships", {}).get("answers", {}).get("data", []) or []
-            )
-            answers = [included.get((a["type"], a["id"])) for a in answer_refs]
-            answers = [a for a in answers if a]
-            results.append(
-                {
-                    "job_application_id": app["id"],
-                    "candidate": candidate,
-                    "answers": answers,
-                    "rejected_at": app.get("attributes", {}).get("rejected-at"),
-                }
-            )
-        return results
-
-    # ------------------------------------------------------------------
-    # Escritura de vuelta hacia Team Tailor
-    # ------------------------------------------------------------------
-    def add_note(self, candidate_id, body):
-        """Agrega un comentario/nota visible en la ficha del candidato.
-
-        Según la documentación de Team Tailor, el atributo del texto de la
-        nota se llama 'note' (no 'text').
-        """
-        payload = {
-            "data": {
-                "type": "notes",
-                "attributes": {"note": body},
-                "relationships": {
-                    "candidate": {"data": {"type": "candidates", "id": candidate_id}}
-                },
-            }
-        }
-        return self._post("/notes", payload)
-
-    def add_tag(self, candidate_id, tag):
-        """Intenta agregar una etiqueta al candidato.
-
-        Team Tailor maneja etiquetas de candidato como una lista de strings.
-        Esto puede requerir ajuste según la versión/cuenta real (revisar
-        respuesta de GET /candidates/{id} para confirmar el nombre exacto del
-        atributo antes de usar esto en producción).
-        """
-        current = self._get(f"/candidates/{candidate_id}")
-        attrs = current.get("data", {}).get("attributes", {})
-        existing = attrs.get("tag-list") or attrs.get("tags") or []
-        if isinstance(existing, str):
-            existing_set = {t.strip() for t in existing.split(",") if t.strip()}
-        else:
-            existing_set = set(existing or [])
-        existing_set.add(tag)
-
-        payload = {
-            "data": {
-                "type": "candidates",
-                "id": candidate_id,
-                "attributes": {"tag-list": sorted(existing_set)},
-            }
-        }
-        return self._patch(f"/candidates/{candidate_id}", payload)
+def build_note_text(result):
+    return (
+        f"[Filtro automático Puelche] Match {result['tier']} (puntaje {result['score']}). "
+        f"Formación excluyente: "
+        f"{'cumple' if result['formacion_ok'] else ('no detectada' if result['formacion_ok'] is False else 'sin lista definida')} "
+        f"({', '.join(result['formacion_hits']) or 'sin coincidencias'}). "
+        f"Señales RRLL/sindicatos: {', '.join(result['rrll_hits']) or 'ninguna'}. "
+        f"Señales industria: {', '.join(result['industria_hits']) or 'ninguna'}. "
+        f"Años detectados: {result['years_detected'] if result['years_detected'] is not None else 'no detectado'}. "
+        f"Renta esperada: {result['renta_esperada'] if result['renta_esperada'] else 'no informada'} "
+        f"({'dentro de rango' if result['presupuesto_ok'] else 'sobre el rango sugerido'})."
+    )
