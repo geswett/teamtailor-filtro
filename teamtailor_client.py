@@ -228,38 +228,47 @@ class TeamTailorClient:
         con el texto de la pregunta ya incrustado en attributes['question']
         (para que scoring.py pueda leerlo directo).
 
-        IMPORTANTE: la relación 'question' de un answer NO trae un 'data'
-        (id/type) inline como el resto de la API — solo trae un link
-        'related' (ej. /v1/answers/{id}/question). Por eso hay que seguir
-        ese link para obtener la pregunta. Se cachea por URL (compartido
-        entre candidatos de la misma corrida, ya que normalmente comparten
-        las mismas preguntas del formulario del proceso)."""
+        IMPORTANTE (rendimiento): la relación 'question' de cada answer NO
+        trae un 'data' (id/type) inline, solo un link 'related' distinto por
+        cada respuesta (ej. /v1/answers/{id}/question). Seguir ese link una
+        vez por respuesta no funciona en la práctica: con decenas de
+        respuestas por candidato, hacerlo para varios candidatos dispara
+        cientos de llamadas adicionales y el servidor termina respondiendo
+        con timeout (504) antes de que Team Tailor complete todo.
+
+        En su lugar, se emparejan 'answers' y 'questions' por POSICIÓN: la
+        relación 'questions' del candidato viene en el mismo orden que
+        'answers' (el candidato responde las preguntas del formulario en
+        orden). Esto no hace ninguna llamada adicional."""
         data = self._get(
             f"/candidates/{candidate_id}", params={"include": "answers,questions"}
         )
         included = data.get("included", [])
         included_map = {(i["type"], i["id"]): i for i in included}
         candidate_data = data.get("data", {})
-        answer_refs = (
-            candidate_data.get("relationships", {}).get("answers", {}).get("data", [])
-            or []
-        )
+        relationships = candidate_data.get("relationships", {})
+        answer_refs = relationships.get("answers", {}).get("data", []) or []
+        question_refs = relationships.get("questions", {}).get("data", []) or []
 
         results = []
-        for ref in answer_refs:
+        for i, ref in enumerate(answer_refs):
             answer = included_map.get((ref["type"], ref["id"]))
             if not answer:
                 continue
 
-            question_rel = answer.get("relationships", {}).get("question", {}) or {}
-            q_ref = question_rel.get("data")
             question = None
+            # 1) intento directo: si el answer trajera 'data' en su relación
+            #    'question' (no debería, pero por si acaso en otras cuentas).
+            q_ref = (answer.get("relationships", {}).get("question", {}) or {}).get(
+                "data"
+            )
             if q_ref:
                 question = included_map.get((q_ref["type"], q_ref["id"]))
-            if question is None:
-                related_url = question_rel.get("links", {}).get("related")
-                if related_url:
-                    question = self._get_question_via_url_cached(related_url)
+            # 2) fallback sin llamadas extra: emparejar por posición con la
+            #    lista de 'questions' del candidato (mismo orden que answers).
+            if question is None and i < len(question_refs):
+                qref = question_refs[i]
+                question = included_map.get((qref["type"], qref["id"]))
 
             q_attrs = question.get("attributes", {}) if question else {}
             question_text = (
@@ -273,19 +282,6 @@ class TeamTailorClient:
             results.append(answer_copy)
 
         return results
-
-    def _get_question_via_url_cached(self, url):
-        if not hasattr(self, "_question_url_cache"):
-            self._question_url_cache = {}
-        if url in self._question_url_cache:
-            return self._question_url_cache[url]
-        try:
-            data = self._get_url(url)
-            question = data.get("data")
-        except Exception:
-            question = None
-        self._question_url_cache[url] = question
-        return question
 
     @staticmethod
     def _merge_included(data):
