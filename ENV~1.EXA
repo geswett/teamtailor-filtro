@@ -1,0 +1,20 @@
+# Copia este archivo a ".env" y completa tu API key real.
+# NUNCA subas el archivo ".env" (con la key real) a GitHub.
+
+# API key de Team Tailor (Configuración > Integraciones > API keys). Debe
+# tener permisos de Admin con lectura/escritura para poder leer candidatos
+# y escribir notas.
+TEAMTAILOR_API_TOKEN=
+
+# "eu" o "na" segun donde esté alojada la cuenta (Puelche = eu por defecto)
+TEAMTAILOR_STACK=eu
+
+# Version de API de Team Tailor (dejar así salvo que la doc oficial indique
+# una version mas reciente)
+TEAMTAILOR_API_VERSION=20240904
+
+# Puerto donde corre la app
+PORT=5000
+
+# Poner en "0" cuando se despliegue en un servidor real (producción)
+FLASK_DEBUG=1
