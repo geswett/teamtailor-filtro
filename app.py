@@ -48,7 +48,7 @@ def index():
 
 @app.route("/api/jobs")
 def api_jobs():
-    status = request.args.get("status", "open")
+    status = request.args.get("status")
     try:
         client = get_client()
         jobs = client.list_jobs(status=status)
