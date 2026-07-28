@@ -129,6 +129,16 @@ def score_candidate(candidate, answers, requirements):
     else:
         tier = "Bajo"
 
+    # Debug: lista de (pregunta, respuesta) tal como las ve el motor. Sirve
+    # para diagnosticar por qué algo no matcheó (ej. la renta esperada) sin
+    # depender de la vista previa del texto combinado, que puede quedar
+    # tapada por el resumen de CV si este es largo.
+    answers_debug = []
+    for a in answers[:40]:
+        q, t = _answer_text(a)
+        if q or t:
+            answers_debug.append({"question": q[:80], "answer": t[:80]})
+
     return {
         "tier": tier,
         "score": score,
@@ -140,6 +150,7 @@ def score_candidate(candidate, answers, requirements):
         "renta_esperada": renta,
         "presupuesto_ok": presupuesto_ok,
         "text_used_preview": text[:500],
+        "answers_debug": answers_debug,
     }
 
 
