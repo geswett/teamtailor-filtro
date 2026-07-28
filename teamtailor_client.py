@@ -38,37 +38,61 @@ class TeamTailorClient:
                 "(ver .env.example)."
             )
 
-    def _headers(self):
-        return {
+    def _headers(self, with_body=False):
+        headers = {
             "Authorization": f"Token token={self.token}",
             "X-Api-Version": self.api_version,
-            "Content-Type": "application/vnd.api+json",
+            "Accept": "application/vnd.api+json",
         }
+        if with_body:
+            headers["Content-Type"] = "application/vnd.api+json"
+        return headers
 
     def _get(self, path, params=None):
         r = requests.get(
-            f"{self.base_url}{path}", headers=self._headers(), params=params, timeout=30
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            params=params,
+            timeout=30,
         )
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(
+                f"Team Tailor API error {r.status_code} en GET {path}: {r.text[:500]}"
+            )
         return r.json()
 
     def _get_url(self, url):
         r = requests.get(url, headers=self._headers(), timeout=30)
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(
+                f"Team Tailor API error {r.status_code} en GET {url}: {r.text[:500]}"
+            )
         return r.json()
 
     def _post(self, path, payload):
         r = requests.post(
-            f"{self.base_url}{path}", headers=self._headers(), json=payload, timeout=30
+            f"{self.base_url}{path}",
+            headers=self._headers(with_body=True),
+            json=payload,
+            timeout=30,
         )
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(
+                f"Team Tailor API error {r.status_code} en POST {path}: {r.text[:500]}"
+            )
         return r.json() if r.text else {}
 
     def _patch(self, path, payload):
         r = requests.patch(
-            f"{self.base_url}{path}", headers=self._headers(), json=payload, timeout=30
+            f"{self.base_url}{path}",
+            headers=self._headers(with_body=True),
+            json=payload,
+            timeout=30,
         )
-        r.raise_for_status()
+        if not r.ok:
+            raise RuntimeError(
+                f"Team Tailor API error {r.status_code} en PATCH {path}: {r.text[:500]}"
+            )
         return r.json() if r.text else {}
 
     # ------------------------------------------------------------------
