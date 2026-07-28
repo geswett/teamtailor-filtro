@@ -226,7 +226,14 @@ class TeamTailorClient:
     def get_candidate_answers(self, candidate_id):
         """Trae las respuestas del formulario de postulación de un candidato,
         con el texto de la pregunta ya incrustado en attributes['question']
-        (para que scoring.py pueda leerlo directo)."""
+        (para que scoring.py pueda leerlo directo).
+
+        El include=answers,questions no siempre trae TODAS las preguntas
+        relacionadas en el mismo request (puede venir incompleto/paginado
+        internamente). Si la pregunta de una respuesta no vino incluida, se
+        pide aparte por su id y se cachea (compartido entre candidatos de la
+        misma corrida, ya que normalmente comparten las mismas preguntas del
+        formulario del proceso)."""
         data = self._get(
             f"/candidates/{candidate_id}", params={"include": "answers,questions"}
         )
@@ -246,9 +253,12 @@ class TeamTailorClient:
             q_ref = (answer.get("relationships", {}).get("question", {}) or {}).get(
                 "data"
             )
-            question = (
-                included_map.get((q_ref["type"], q_ref["id"])) if q_ref else None
-            )
+            question = None
+            if q_ref:
+                question = included_map.get((q_ref["type"], q_ref["id"]))
+                if question is None:
+                    question = self._get_question_cached(q_ref["id"])
+
             q_attrs = question.get("attributes", {}) if question else {}
             question_text = (
                 q_attrs.get("body") or q_attrs.get("title") or q_attrs.get("text") or ""
@@ -261,6 +271,19 @@ class TeamTailorClient:
             results.append(answer_copy)
 
         return results
+
+    def _get_question_cached(self, question_id):
+        if not hasattr(self, "_question_cache"):
+            self._question_cache = {}
+        if question_id in self._question_cache:
+            return self._question_cache[question_id]
+        try:
+            data = self._get(f"/questions/{question_id}")
+            question = data.get("data")
+        except Exception:
+            question = None
+        self._question_cache[question_id] = question
+        return question
 
     @staticmethod
     def _merge_included(data):
