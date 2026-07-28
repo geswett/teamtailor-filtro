@@ -125,6 +125,10 @@ def api_filtrar():
         result["candidate_name"] = name
         result["job_application_id"] = app_data["job_application_id"]
         result["write_error"] = None
+        # Info de depuración: cuántas respuestas de formulario se lograron
+        # traer para este candidato (ayuda a diagnosticar si el problema es
+        # que no llegan respuestas, o que el texto no matchea palabras clave).
+        result["answers_count"] = len(answers)
 
         if write_back and candidate:
             note_text = build_note_text(result)
