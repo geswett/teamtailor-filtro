@@ -145,6 +145,11 @@ function renderResults(results) {
     const formacion = r.formacion_ok === null
       ? "sin lista definida"
       : (r.formacion_ok ? "cumple" : "no detectada");
+    // Lo que el CV del candidato menciona sobre su formación, se haya
+    // definido o no una lista de formación excluyente en el perfil.
+    const formacionDetalle = r.formacion_ok === true
+      ? r.formacion_hits
+      : (r.formacion_detectada || []);
     const nota = r.note_written
       ? "Nota escrita ✔"
       : (r.write_error ? "Error: " + r.write_error : "-");
@@ -153,7 +158,7 @@ function renderResults(results) {
       <td>${tagCell}</td>
       <td>${nombre}</td>
       <td>${r.score}</td>
-      <td>${formacion}${r.formacion_hits.length ? " (" + r.formacion_hits.join(", ") + ")" : ""}</td>
+      <td>${formacion}${formacionDetalle.length ? " (" + formacionDetalle.join(", ") + ")" : ""}</td>
       <td>${r.area_hits.join(", ") || "-"}</td>
       <td>${r.industria_hits.join(", ") || "-"}</td>
       <td>${r.years_detected ?? "-"}</td>
