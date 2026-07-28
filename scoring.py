@@ -12,10 +12,49 @@ Fuentes de texto usadas por candidato (en ese orden de prioridad):
 - respuestas (answers) del formulario de postulación.
 """
 
+import datetime
 import re
 
 YEARS_RE = re.compile(r"(\d{1,2})\s*años")
 DIGITS_RE = re.compile(r"[^\d]")
+
+# Detecta rangos de fechas tipo "2020 - Presente", "2015-2023", "2018 – actual"
+# para estimar años de experiencia cuando el texto no dice explícitamente
+# "X años" (muy común en el resumen de CV generado por Team Tailor Co-pilot,
+# que suele listar cargos con fechas en vez de un total ya calculado).
+DATE_RANGE_RE = re.compile(
+    r"(\d{4})\s*[-–—]\s*(presente|actualidad|actual|hoy|\d{4})", re.IGNORECASE
+)
+CURRENT_YEAR = datetime.date.today().year
+
+
+def _years_from_date_ranges(text_lower):
+    spans = []
+    for start_str, end_str in DATE_RANGE_RE.findall(text_lower):
+        start = int(start_str)
+        end = CURRENT_YEAR if not end_str.isdigit() else int(end_str)
+        if 1950 <= start <= CURRENT_YEAR and start <= end <= CURRENT_YEAR:
+            spans.append((start, end))
+    if not spans:
+        return None
+    earliest = min(s for s, _ in spans)
+    latest = max(e for _, e in spans)
+    return latest - earliest
+
+
+def _dedupe_specific(items):
+    """Si un ítem es substring de otro ítem más largo de la misma lista,
+    se descarta el más corto (nos quedamos con la variante más específica).
+    Sirve para no mostrar 'administración de empresas' Y 'ingeniería en
+    administración de empresas' como dos coincidencias separadas cuando en
+    realidad es la misma mención del CV."""
+    unique_sorted = sorted(set(items), key=len, reverse=True)
+    kept = []
+    for item in unique_sorted:
+        if not any(item != k and item in k for k in kept):
+            kept.append(item)
+    # Mantener el orden original de aparición para que se vea prolijo.
+    return sorted(kept, key=lambda i: items.index(i))
 
 
 def _answer_text(answer):
@@ -92,17 +131,25 @@ def score_candidate(candidate, answers, requirements):
     text_lower = text.lower()
 
     formacion_list = requirements.get("formacion_excluyente") or []
-    formacion_hits = [c for c in formacion_list if c.lower() in text_lower]
+    formacion_hits_raw = [c for c in formacion_list if c.lower() in text_lower]
+    formacion_hits = _dedupe_specific(formacion_hits_raw)
     formacion_ok = bool(formacion_hits) if formacion_list else None
 
     rrll_list = requirements.get("rrll_keywords") or []
-    rrll_hits = [k for k in rrll_list if k.lower() in text_lower]
+    rrll_hits = _dedupe_specific([k for k in rrll_list if k.lower() in text_lower])
 
     industria_list = requirements.get("industria_keywords") or []
-    industria_hits = [k for k in industria_list if k.lower() in text_lower]
+    industria_hits = _dedupe_specific(
+        [k for k in industria_list if k.lower() in text_lower]
+    )
 
     years_matches = YEARS_RE.findall(text_lower)
     years = max((int(y) for y in years_matches), default=None)
+    if years is None:
+        # Respaldo: si no hay un "X años" explícito, se estima a partir de
+        # rangos de fechas (ej. "2020 - Presente") que suele traer el
+        # resumen de CV generado por Team Tailor Co-pilot.
+        years = _years_from_date_ranges(text_lower)
 
     renta = _extract_salary(answers)
     salario_min = requirements.get("salario_min")
