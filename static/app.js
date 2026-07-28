@@ -148,13 +148,6 @@ function renderResults(results) {
     const nota = r.note_written
       ? "Nota escrita ✔"
       : (r.write_error ? "Error: " + r.write_error : "-");
-    // Texto de depuración: lista de pregunta/respuesta tal como las ve el
-    // motor (útil para ver por qué algo no matcheó, por ejemplo la renta
-    // esperada, sin depender del resumen de texto combinado que puede
-    // quedar tapado por el resumen de CV si este es largo).
-    const debugText = (r.answers_debug || [])
-      .map((qa) => `${escapeHtml(qa.question)}: ${escapeHtml(qa.answer)}`)
-      .join("<br>");
 
     tr.innerHTML = `
       <td>${tagCell}</td>
@@ -167,7 +160,6 @@ function renderResults(results) {
       <td>${r.renta_esperada ? r.renta_esperada.toLocaleString("es-CL") : "-"}</td>
       <td>${r.answers_count ?? "-"}</td>
       <td>${nota}</td>
-      <td style="max-width:260px; white-space:pre-wrap; font-size:11px; color:#767676;">${debugText}</td>
     `;
     resultsTbody.appendChild(tr);
   });
