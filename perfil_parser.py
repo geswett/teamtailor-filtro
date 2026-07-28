@@ -118,6 +118,64 @@ DEFAULT_INDUSTRIA_KEYWORDS = [
 
 SALARY_RE = re.compile(r"\$?\s?([\d][\d\.]{5,10})")
 
+# Líneas que probablemente hablan de la formación/estudios requeridos (para
+# no buscar nombres de carrera en cualquier parte del documento, solo donde
+# tiene sentido).
+FORMACION_TRIGGER_WORDS = [
+    "formación",
+    "formacion",
+    "estudios",
+    "profesión",
+    "profesion",
+    "carrera",
+    "requisitos académicos",
+    "requisitos academicos",
+    "título profesional",
+    "titulo profesional",
+    "nivel educacional",
+    "educación",
+    "educacion",
+]
+
+# Patrones genéricos de nombres de carrera, para detectar formaciones que NO
+# están en nuestra lista fija CAREER_FAMILIES (ej. "Ingeniería Industrial",
+# "Ingeniería en Alimentos", "Técnico en Prevención de Riesgos"). Esto evita
+# tener que hardcodear cada carrera posible: cualquier perfil de cargo nuevo
+# queda cubierto mientras use estos patrones comunes de redacción.
+GENERIC_CAREER_RE = re.compile(
+    r"(?:"
+    r"ingenier[íi]a?\s+(?:civil\s+)?(?:en\s+|de\s+)?[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,2}"
+    r"|licenciatura\s+en\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,2}"
+    r"|licenciad[oa]\s+en\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,2}"
+    r"|técnic[oa]\s+(?:de\s+nivel\s+superior\s+)?en\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,2}"
+    r"|contador(?:a)?(?:\s+(?:auditor(?:a)?|general))?"
+    r"|administrad(?:or|ora)\s+(?:de|en)\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,2}"
+    r"|psicólog[oa]"
+    r")",
+    re.IGNORECASE,
+)
+
+
+ENUMERATION_SPLIT_RE = re.compile(r",|;|\so\s|\su\s|\sy\s", re.IGNORECASE)
+
+
+def _extract_generic_formacion(full_text):
+    found = []
+    for line in full_text.split("\n"):
+        line_lower = line.lower()
+        if not any(tw in line_lower for tw in FORMACION_TRIGGER_WORDS):
+            continue
+        # Se separa por comas/"o"/"y" antes de aplicar el regex, para que al
+        # buscar una carrera no se "coma" de paso las primeras palabras de
+        # la siguiente carrera enumerada en la misma línea (ej. "Ingeniería
+        # Industrial, Ingeniería en Alimentos o carreras afines").
+        for fragment in ENUMERATION_SPLIT_RE.split(line):
+            for match in GENERIC_CAREER_RE.findall(fragment):
+                cleaned = match.strip().lower()
+                if cleaned and cleaned not in found:
+                    found.append(cleaned)
+    return found
+
 
 def _extract_salary_range(full_text):
     matches = SALARY_RE.findall(full_text)
@@ -142,6 +200,14 @@ def parse_requirements(full_text):
             for variant in family:
                 if variant not in formacion_excluyente:
                     formacion_excluyente.append(variant)
+
+    # Respaldo genérico: si el cargo pide una carrera que no está en nuestra
+    # lista conocida (CAREER_FAMILIES), igual queda detectada buscando
+    # patrones de nombres de carrera en las líneas que mencionan
+    # formación/estudios/requisitos académicos.
+    for extra in _extract_generic_formacion(full_text):
+        if extra not in formacion_excluyente:
+            formacion_excluyente.append(extra)
 
     salario_min, salario_max = _extract_salary_range(full_text)
 
