@@ -135,8 +135,8 @@ def score_candidate(candidate, answers, requirements):
     formacion_hits = _dedupe_specific(formacion_hits_raw)
     formacion_ok = bool(formacion_hits) if formacion_list else None
 
-    rrll_list = requirements.get("rrll_keywords") or []
-    rrll_hits = _dedupe_specific([k for k in rrll_list if k.lower() in text_lower])
+    area_list = requirements.get("area_keywords") or []
+    area_hits = _dedupe_specific([k for k in area_list if k.lower() in text_lower])
 
     industria_list = requirements.get("industria_keywords") or []
     industria_hits = _dedupe_specific(
@@ -163,7 +163,7 @@ def score_candidate(candidate, answers, requirements):
         score += 3
     elif formacion_ok is False:
         score -= 1
-    score += min(len(rrll_hits), 3)
+    score += min(len(area_hits), 3)
     score += min(len(industria_hits), 2)
     if years is not None and years >= 10:
         score += 1
@@ -204,7 +204,7 @@ def score_candidate(candidate, answers, requirements):
         "score": score,
         "formacion_ok": formacion_ok,
         "formacion_hits": formacion_hits,
-        "rrll_hits": rrll_hits,
+        "area_hits": area_hits,
         "industria_hits": industria_hits,
         "years_detected": years,
         "renta_esperada": renta,
@@ -223,7 +223,7 @@ def build_note_text(result):
         f"Formación excluyente: "
         f"{'cumple' if result['formacion_ok'] else ('no detectada' if result['formacion_ok'] is False else 'sin lista definida')} "
         f"({', '.join(result['formacion_hits']) or 'sin coincidencias'}). "
-        f"Señales RRLL/sindicatos: {', '.join(result['rrll_hits']) or 'ninguna'}. "
+        f"Señales de área/competencias: {', '.join(result['area_hits']) or 'ninguna'}. "
         f"Señales industria: {', '.join(result['industria_hits']) or 'ninguna'}. "
         f"Años detectados: {result['years_detected'] if result['years_detected'] is not None else 'no detectado'}. "
         f"Renta esperada: {result['renta_esperada'] if result['renta_esperada'] else 'no informada'} "
