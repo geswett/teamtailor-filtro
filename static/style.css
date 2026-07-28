@@ -185,6 +185,12 @@ select:focus, input:focus {
   color: var(--text2);
 }
 
+.hint-text {
+  font-size: 11px;
+  color: var(--text3);
+  margin: -6px 0 14px;
+}
+
 .status-msg {
   color: var(--text2);
   font-size: 13px;
