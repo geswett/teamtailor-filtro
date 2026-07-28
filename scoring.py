@@ -23,7 +23,24 @@ def _answer_text(answer):
         return "", ""
     attrs = answer.get("attributes", {})
     question = str(attrs.get("question") or attrs.get("body") or "")
-    text = str(attrs.get("text") or attrs.get("answer") or "")
+
+    # El valor de la respuesta puede venir en distintos atributos según el
+    # tipo de pregunta en Team Tailor: texto libre ("text"), rango numérico
+    # ("range", ej. un slider de renta esperada), selección múltiple
+    # ("choices") o sí/no ("boolean"). Probamos en ese orden.
+    if attrs.get("text"):
+        text = str(attrs.get("text"))
+    elif attrs.get("answer"):
+        text = str(attrs.get("answer"))
+    elif attrs.get("range") is not None:
+        text = str(attrs.get("range"))
+    elif attrs.get("choices"):
+        text = ", ".join(str(c) for c in attrs.get("choices"))
+    elif attrs.get("boolean") is not None:
+        text = "Sí" if attrs.get("boolean") else "No"
+    else:
+        text = ""
+
     return question, text
 
 
@@ -42,11 +59,28 @@ def _candidate_text(candidate, answers):
     return "\n".join(parts)
 
 
+SALARY_QUESTION_KEYWORDS = [
+    "renta",
+    "sueldo",
+    "pretensión",
+    "pretension",
+    "expectativa salarial",
+    "expectativas salariales",
+    "aspiración salarial",
+    "aspiracion salarial",
+    "remuneración",
+    "remuneracion",
+    "salario",
+    "líquido esperado",
+    "liquido esperado",
+]
+
+
 def _extract_salary(answers):
     for a in answers:
         question, text = _answer_text(a)
         q_lower = question.lower()
-        if "renta" in q_lower or "sueldo" in q_lower or "pretensión" in q_lower:
+        if any(kw in q_lower for kw in SALARY_QUESTION_KEYWORDS):
             digits = DIGITS_RE.sub("", text)
             if digits.isdigit() and len(digits) >= 6:
                 return int(digits)
