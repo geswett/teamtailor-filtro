@@ -105,6 +105,7 @@ def score_candidate(candidate, answers, requirements):
     years = max((int(y) for y in years_matches), default=None)
 
     renta = _extract_salary(answers)
+    salario_min = requirements.get("salario_min")
     salario_max = requirements.get("salario_max")
     presupuesto_ok = True
     if renta and salario_max:
@@ -129,6 +130,18 @@ def score_candidate(candidate, answers, requirements):
     else:
         tier = "Bajo"
 
+    # Se marca para RECHAZO automático (prefijo en la nota) si:
+    # - el match es "Bajo", o
+    # - la renta esperada está un 50% o más por encima del máximo sugerido,
+    #   o un 50% o más por debajo del mínimo sugerido.
+    renta_fuera_de_rango = False
+    if renta and salario_max and renta >= salario_max * 1.5:
+        renta_fuera_de_rango = True
+    if renta and salario_min and renta <= salario_min * 0.5:
+        renta_fuera_de_rango = True
+
+    rechazo = tier == "Bajo" or renta_fuera_de_rango
+
     # Debug: lista de (pregunta, respuesta) tal como las ve el motor. Sirve
     # para diagnosticar por qué algo no matcheó (ej. la renta esperada) sin
     # depender de la vista previa del texto combinado, que puede quedar
@@ -149,14 +162,17 @@ def score_candidate(candidate, answers, requirements):
         "years_detected": years,
         "renta_esperada": renta,
         "presupuesto_ok": presupuesto_ok,
+        "renta_fuera_de_rango": renta_fuera_de_rango,
+        "rechazo": rechazo,
         "text_used_preview": text[:500],
         "answers_debug": answers_debug,
     }
 
 
 def build_note_text(result):
+    prefijo = "RECHAZO. " if result.get("rechazo") else ""
     return (
-        f"[Filtro automático Puelche] Match {result['tier']} (puntaje {result['score']}). "
+        f"{prefijo}[Filtro automático Puelche] Match {result['tier']} (puntaje {result['score']}). "
         f"Formación excluyente: "
         f"{'cumple' if result['formacion_ok'] else ('no detectada' if result['formacion_ok'] is False else 'sin lista definida')} "
         f"({', '.join(result['formacion_hits']) or 'sin coincidencias'}). "
