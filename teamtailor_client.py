@@ -147,11 +147,19 @@ class TeamTailorClient:
     # Candidaturas (job-applications) de una etapa
     # ------------------------------------------------------------------
     def list_job_applications(self, job_id, stage_id):
+        """Trae las candidaturas de una etapa, con el candidato incluido.
+
+        Nota: 'answers' NO es una relación válida de job-applications en la
+        API de Team Tailor (solo lo son candidate, job, stage, reject-reason).
+        Las respuestas del formulario de postulación viven en el candidato
+        (relación 'answers' de /candidates/{id}), así que se piden aparte,
+        una consulta por candidato, vía get_candidate_answers().
+        """
         applications = []
         params = {
             "filter[job]": job_id,
             "filter[stage]": stage_id,
-            "include": "candidate,answers",
+            "include": "candidate",
             "page[size]": 30,
         }
         data = self._get("/job-applications", params=params)
@@ -163,7 +171,56 @@ class TeamTailorClient:
             applications.extend(self._merge_included(data))
             next_link = data.get("links", {}).get("next")
 
+        for app_data in applications:
+            candidate = app_data.get("candidate")
+            if candidate:
+                try:
+                    app_data["answers"] = self.get_candidate_answers(candidate["id"])
+                except Exception:
+                    app_data["answers"] = []
+            else:
+                app_data["answers"] = []
+
         return applications
+
+    def get_candidate_answers(self, candidate_id):
+        """Trae las respuestas del formulario de postulación de un candidato,
+        con el texto de la pregunta ya incrustado en attributes['question']
+        (para que scoring.py pueda leerlo directo)."""
+        data = self._get(
+            f"/candidates/{candidate_id}", params={"include": "answers,questions"}
+        )
+        included = data.get("included", [])
+        included_map = {(i["type"], i["id"]): i for i in included}
+        candidate_data = data.get("data", {})
+        answer_refs = (
+            candidate_data.get("relationships", {}).get("answers", {}).get("data", [])
+            or []
+        )
+
+        results = []
+        for ref in answer_refs:
+            answer = included_map.get((ref["type"], ref["id"]))
+            if not answer:
+                continue
+            q_ref = (answer.get("relationships", {}).get("question", {}) or {}).get(
+                "data"
+            )
+            question = (
+                included_map.get((q_ref["type"], q_ref["id"])) if q_ref else None
+            )
+            q_attrs = question.get("attributes", {}) if question else {}
+            question_text = (
+                q_attrs.get("body") or q_attrs.get("title") or q_attrs.get("text") or ""
+            )
+
+            answer_copy = dict(answer)
+            attrs_copy = dict(answer.get("attributes", {}))
+            attrs_copy["question"] = question_text
+            answer_copy["attributes"] = attrs_copy
+            results.append(answer_copy)
+
+        return results
 
     @staticmethod
     def _merge_included(data):
