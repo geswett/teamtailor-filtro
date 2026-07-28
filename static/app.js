@@ -1,13 +1,13 @@
 const jobSelect = document.getElementById("job-select");
 const stageSelect = document.getElementById("stage-select");
-const perfilFileInput = document.getElementById("perfil-file");
-const btnUploadPerfil = document.getElementById("btn-upload-perfil");
-const requirementsEditor = document.getElementById("requirements-editor");
-const reqFormacion = document.getElementById("req-formacion");
-const reqArea = document.getElementById("req-area");
-const reqIndustria = document.getElementById("req-industria");
-const reqSalarioMin = document.getElementById("req-salario-min");
-const reqSalarioMax = document.getElementById("req-salario-max");
+const reqRentaMin = document.getElementById("req-renta-min");
+const reqRentaMax = document.getElementById("req-renta-max");
+const reqEdadMin = document.getElementById("req-edad-min");
+const reqEdadMax = document.getElementById("req-edad-max");
+const reqCarreras = document.getElementById("req-carreras");
+const reqUniversidades = document.getElementById("req-universidades");
+const reqCiudad = document.getElementById("req-ciudad");
+const reqKeywords = document.getElementById("req-keywords");
 const btnFiltrar = document.getElementById("btn-filtrar");
 const writeBackCheckbox = document.getElementById("write-back");
 const statusMsg = document.getElementById("status-msg");
@@ -15,15 +15,13 @@ const resultsSummary = document.getElementById("results-summary");
 const resultsTable = document.getElementById("results-table");
 const resultsTbody = resultsTable.querySelector("tbody");
 
-let perfilCargado = false;
-
 function setStatus(msg, isError) {
   statusMsg.textContent = msg || "";
-  statusMsg.style.color = isError ? "#c0392b" : "#767676";
+  statusMsg.style.color = isError ? "#8F1A1A" : "#5C5A55";
 }
 
 function updateFiltrarEnabled() {
-  btnFiltrar.disabled = !(jobSelect.value && stageSelect.value && perfilCargado);
+  btnFiltrar.disabled = !(jobSelect.value && stageSelect.value);
 }
 
 async function loadJobs() {
@@ -79,60 +77,25 @@ jobSelect.addEventListener("change", () => {
 
 stageSelect.addEventListener("change", updateFiltrarEnabled);
 
-btnUploadPerfil.addEventListener("click", async () => {
-  const file = perfilFileInput.files[0];
-  if (!file) {
-    setStatus("Selecciona primero un archivo .docx o .pdf", true);
-    return;
-  }
-  setStatus("Leyendo perfil de cargo…");
-  const formData = new FormData();
-  formData.append("file", file);
-
-  try {
-    const res = await fetch("/api/perfil", { method: "POST", body: formData });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "Error desconocido");
-
-    const req = data.requirements;
-    reqFormacion.value = (req.formacion_excluyente || []).join(", ");
-    reqArea.value = (req.area_keywords || []).join(", ");
-    reqIndustria.value = (req.industria_keywords || []).join(", ");
-    reqSalarioMin.value = req.salario_min || "";
-    reqSalarioMax.value = req.salario_max || "";
-
-    requirementsEditor.classList.remove("hidden");
-    perfilCargado = true;
-    updateFiltrarEnabled();
-    setStatus("Perfil cargado. Revisa/ajusta los requisitos antes de filtrar.");
-  } catch (err) {
-    setStatus("No se pudo leer el perfil: " + err.message, true);
-  }
-});
+function splitList(value, max) {
+  const items = value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return max ? items.slice(0, max) : items;
+}
 
 function currentRequirements() {
   return {
-    formacion_excluyente: reqFormacion.value
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
-    area_keywords: reqArea.value
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
-    industria_keywords: reqIndustria.value
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
-    salario_min: reqSalarioMin.value ? Number(reqSalarioMin.value) : null,
-    salario_max: reqSalarioMax.value ? Number(reqSalarioMax.value) : null,
+    renta_min: reqRentaMin.value ? Number(reqRentaMin.value) : null,
+    renta_max: reqRentaMax.value ? Number(reqRentaMax.value) : null,
+    edad_min: reqEdadMin.value ? Number(reqEdadMin.value) : null,
+    edad_max: reqEdadMax.value ? Number(reqEdadMax.value) : null,
+    carreras: splitList(reqCarreras.value).map((s) => s.toLowerCase()),
+    universidades: splitList(reqUniversidades.value).map((s) => s.toLowerCase()),
+    ciudad: reqCiudad.value.trim(),
+    palabras_clave: splitList(reqKeywords.value, 3),
   };
-}
-
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str == null ? "" : str;
-  return div.innerHTML;
 }
 
 function renderResults(results) {
@@ -142,14 +105,6 @@ function renderResults(results) {
 
     const tagCell = `<span class="tag ${r.tier}">${r.tier}</span>`;
     const nombre = r.candidate_name || "(sin nombre)";
-    const formacion = r.formacion_ok === null
-      ? "sin lista definida"
-      : (r.formacion_ok ? "cumple" : "no detectada");
-    // Lo que el CV del candidato menciona sobre su formación, se haya
-    // definido o no una lista de formación excluyente en el perfil.
-    const formacionDetalle = r.formacion_ok === true
-      ? r.formacion_hits
-      : (r.formacion_detectada || []);
     const nota = r.note_written
       ? "Nota escrita ✔"
       : (r.write_error ? "Error: " + r.write_error : "-");
@@ -158,11 +113,12 @@ function renderResults(results) {
       <td>${tagCell}</td>
       <td>${nombre}</td>
       <td>${r.score}</td>
-      <td>${formacion}${formacionDetalle.length ? " (" + formacionDetalle.join(", ") + ")" : ""}</td>
-      <td>${r.area_hits.join(", ") || "-"}</td>
-      <td>${r.industria_hits.join(", ") || "-"}</td>
-      <td>${r.years_detected ?? "-"}</td>
-      <td>${r.renta_esperada ? r.renta_esperada.toLocaleString("es-CL") : "-"}</td>
+      <td>${r.renta_status}</td>
+      <td>${r.edad_status}</td>
+      <td>${r.carrera_status}</td>
+      <td>${r.universidad_status}</td>
+      <td>${r.ciudad_status}</td>
+      <td>${r.keywords_status}</td>
       <td>${nota}</td>
     `;
     resultsTbody.appendChild(tr);
@@ -205,3 +161,4 @@ btnFiltrar.addEventListener("click", async () => {
 });
 
 loadJobs();
+updateFiltrarEnabled();
