@@ -293,28 +293,55 @@ class TeamTailorClient:
     # ------------------------------------------------------------------
     # Escritura de vuelta hacia Team Tailor
     # ------------------------------------------------------------------
+    def list_users(self):
+        """Lista simplificada de usuarios internos de la cuenta (para poder
+        asignar autor a las notas que crea la app)."""
+        data = self._get("/users", params={"page[size]": 30})
+        return [
+            {
+                "id": u["id"],
+                "name": u.get("attributes", {}).get("name"),
+                "role": u.get("attributes", {}).get("role"),
+            }
+            for u in data.get("data", [])
+        ]
+
+    def _get_default_user_id(self):
+        """Busca un usuario para usar como autor de las notas creadas por la
+        app (preferentemente un admin). Se cachea tras la primera consulta."""
+        if getattr(self, "_default_user_id", None) is not None:
+            return self._default_user_id
+        try:
+            users = self.list_users()
+        except Exception:
+            users = []
+        chosen = next((u for u in users if u.get("role") == "admin"), None) or (
+            users[0] if users else None
+        )
+        self._default_user_id = chosen["id"] if chosen else None
+        return self._default_user_id
+
     def add_note(self, candidate_id, body):
         """Agrega un comentario/nota visible en la ficha del candidato.
 
-        Según la documentación de Team Tailor:
-        - El atributo del texto de la nota se llama 'note' (no 'text').
-        - El ejemplo oficial de creación envía la relación 'candidate' con
-          SOLO el 'id' (sin 'type'), a diferencia del resto de la API. Se
-          replica ese formato exacto porque enviar 'type' además del 'id'
-          parece hacer que la cuenta devuelva un 400 con cuerpo vacío.
+        Según la documentación de Team Tailor, el atributo del texto de la
+        nota se llama 'note' (no 'text'). El ejemplo oficial de creación de
+        notas también manda una relación 'user' (quién crea la nota); si no
+        se manda, algunas cuentas rechazan la petición con un 400 sin
+        detalle. Por eso se busca un usuario (de preferencia admin) y se
+        incluye automáticamente.
         """
-        try:
-            candidate_id_value = int(candidate_id)
-        except (TypeError, ValueError):
-            candidate_id_value = candidate_id
+        relationships = {"candidate": {"data": {"type": "candidates", "id": candidate_id}}}
+
+        user_id = self._get_default_user_id()
+        if user_id:
+            relationships["user"] = {"data": {"type": "users", "id": user_id}}
 
         payload = {
             "data": {
                 "type": "notes",
                 "attributes": {"note": body},
-                "relationships": {
-                    "candidate": {"data": {"id": candidate_id_value}}
-                },
+                "relationships": relationships,
             }
         }
         return self._post("/notes", payload)
