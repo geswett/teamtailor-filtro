@@ -78,6 +78,15 @@ class TeamTailorClient:
             time.sleep(wait_s)
         return last_response
 
+    @staticmethod
+    def _error_message(r, method, path):
+        body = r.text[:500] if r.text else "(cuerpo vacío)"
+        content_type = r.headers.get("Content-Type", "?")
+        return (
+            f"Team Tailor API error {r.status_code} {r.reason or ''} en {method} {path}. "
+            f"Content-Type respuesta: {content_type}. Cuerpo: {body}"
+        )
+
     def _get(self, path, params=None):
         r = self._request(
             "GET",
@@ -86,17 +95,13 @@ class TeamTailorClient:
             params=params,
         )
         if not r.ok:
-            raise RuntimeError(
-                f"Team Tailor API error {r.status_code} en GET {path}: {r.text[:500]}"
-            )
+            raise RuntimeError(self._error_message(r, "GET", path))
         return r.json()
 
     def _get_url(self, url):
         r = self._request("GET", url, headers=self._headers())
         if not r.ok:
-            raise RuntimeError(
-                f"Team Tailor API error {r.status_code} en GET {url}: {r.text[:500]}"
-            )
+            raise RuntimeError(self._error_message(r, "GET", url))
         return r.json()
 
     def _post(self, path, payload):
@@ -107,9 +112,7 @@ class TeamTailorClient:
             json=payload,
         )
         if not r.ok:
-            raise RuntimeError(
-                f"Team Tailor API error {r.status_code} en POST {path}: {r.text[:500]}"
-            )
+            raise RuntimeError(self._error_message(r, "POST", path))
         return r.json() if r.text else {}
 
     def _patch(self, path, payload):
@@ -120,9 +123,7 @@ class TeamTailorClient:
             json=payload,
         )
         if not r.ok:
-            raise RuntimeError(
-                f"Team Tailor API error {r.status_code} en PATCH {path}: {r.text[:500]}"
-            )
+            raise RuntimeError(self._error_message(r, "PATCH", path))
         return r.json() if r.text else {}
 
     # ------------------------------------------------------------------
