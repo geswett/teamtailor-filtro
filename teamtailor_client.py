@@ -296,15 +296,24 @@ class TeamTailorClient:
     def add_note(self, candidate_id, body):
         """Agrega un comentario/nota visible en la ficha del candidato.
 
-        Según la documentación de Team Tailor, el atributo del texto de la
-        nota se llama 'note' (no 'text').
+        Según la documentación de Team Tailor:
+        - El atributo del texto de la nota se llama 'note' (no 'text').
+        - El ejemplo oficial de creación envía la relación 'candidate' con
+          SOLO el 'id' (sin 'type'), a diferencia del resto de la API. Se
+          replica ese formato exacto porque enviar 'type' además del 'id'
+          parece hacer que la cuenta devuelva un 400 con cuerpo vacío.
         """
+        try:
+            candidate_id_value = int(candidate_id)
+        except (TypeError, ValueError):
+            candidate_id_value = candidate_id
+
         payload = {
             "data": {
                 "type": "notes",
                 "attributes": {"note": body},
                 "relationships": {
-                    "candidate": {"data": {"type": "candidates", "id": candidate_id}}
+                    "candidate": {"data": {"id": candidate_id_value}}
                 },
             }
         }
