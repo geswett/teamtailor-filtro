@@ -228,12 +228,12 @@ class TeamTailorClient:
         con el texto de la pregunta ya incrustado en attributes['question']
         (para que scoring.py pueda leerlo directo).
 
-        El include=answers,questions no siempre trae TODAS las preguntas
-        relacionadas en el mismo request (puede venir incompleto/paginado
-        internamente). Si la pregunta de una respuesta no vino incluida, se
-        pide aparte por su id y se cachea (compartido entre candidatos de la
-        misma corrida, ya que normalmente comparten las mismas preguntas del
-        formulario del proceso)."""
+        IMPORTANTE: la relación 'question' de un answer NO trae un 'data'
+        (id/type) inline como el resto de la API — solo trae un link
+        'related' (ej. /v1/answers/{id}/question). Por eso hay que seguir
+        ese link para obtener la pregunta. Se cachea por URL (compartido
+        entre candidatos de la misma corrida, ya que normalmente comparten
+        las mismas preguntas del formulario del proceso)."""
         data = self._get(
             f"/candidates/{candidate_id}", params={"include": "answers,questions"}
         )
@@ -250,14 +250,16 @@ class TeamTailorClient:
             answer = included_map.get((ref["type"], ref["id"]))
             if not answer:
                 continue
-            q_ref = (answer.get("relationships", {}).get("question", {}) or {}).get(
-                "data"
-            )
+
+            question_rel = answer.get("relationships", {}).get("question", {}) or {}
+            q_ref = question_rel.get("data")
             question = None
             if q_ref:
                 question = included_map.get((q_ref["type"], q_ref["id"]))
-                if question is None:
-                    question = self._get_question_cached(q_ref["id"])
+            if question is None:
+                related_url = question_rel.get("links", {}).get("related")
+                if related_url:
+                    question = self._get_question_via_url_cached(related_url)
 
             q_attrs = question.get("attributes", {}) if question else {}
             question_text = (
@@ -272,17 +274,17 @@ class TeamTailorClient:
 
         return results
 
-    def _get_question_cached(self, question_id):
-        if not hasattr(self, "_question_cache"):
-            self._question_cache = {}
-        if question_id in self._question_cache:
-            return self._question_cache[question_id]
+    def _get_question_via_url_cached(self, url):
+        if not hasattr(self, "_question_url_cache"):
+            self._question_url_cache = {}
+        if url in self._question_url_cache:
+            return self._question_url_cache[url]
         try:
-            data = self._get(f"/questions/{question_id}")
+            data = self._get_url(url)
             question = data.get("data")
         except Exception:
             question = None
-        self._question_cache[question_id] = question
+        self._question_url_cache[url] = question
         return question
 
     @staticmethod
