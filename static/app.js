@@ -148,10 +148,13 @@ function renderResults(results) {
     const nota = r.note_written
       ? "Nota escrita ✔"
       : (r.write_error ? "Error: " + r.write_error : "-");
-    // Texto de depuración: lo que el motor realmente usó para buscar
-    // coincidencias en este candidato (útil para ver por qué algo no
-    // matcheó, por ejemplo la renta esperada).
-    const debugText = escapeHtml((r.text_used_preview || "").slice(0, 300));
+    // Texto de depuración: lista de pregunta/respuesta tal como las ve el
+    // motor (útil para ver por qué algo no matcheó, por ejemplo la renta
+    // esperada, sin depender del resumen de texto combinado que puede
+    // quedar tapado por el resumen de CV si este es largo).
+    const debugText = (r.answers_debug || [])
+      .map((qa) => `${escapeHtml(qa.question)}: ${escapeHtml(qa.answer)}`)
+      .join("<br>");
 
     tr.innerHTML = `
       <td>${tagCell}</td>
