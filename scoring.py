@@ -15,6 +15,8 @@ Fuentes de texto usadas por candidato (en ese orden de prioridad):
 import datetime
 import re
 
+from perfil_parser import GENERIC_CAREER_RE, KNOWN_CAREERS
+
 YEARS_RE = re.compile(r"(\d{1,2})\s*años")
 DIGITS_RE = re.compile(r"[^\d]")
 
@@ -55,6 +57,20 @@ def _dedupe_specific(items):
             kept.append(item)
     # Mantener el orden original de aparición para que se vea prolijo.
     return sorted(kept, key=lambda i: items.index(i))
+
+
+def _detect_candidate_formacion(text_lower):
+    """Detecta qué formación/carrera menciona el propio candidato en su CV o
+    respuestas, independiente de si el perfil de cargo definió una lista de
+    formación excluyente. Sirve como referencia para el reclutador aunque no
+    haya un requisito exacto contra el cual comparar (evita que la columna
+    quede en blanco solo porque el perfil de cargo no especificó carreras)."""
+    found = [c for c in KNOWN_CAREERS if c in text_lower]
+    for match in GENERIC_CAREER_RE.findall(text_lower):
+        cleaned = match.strip().lower()
+        if cleaned:
+            found.append(cleaned)
+    return _dedupe_specific(found)
 
 
 def _answer_text(answer):
@@ -134,6 +150,9 @@ def score_candidate(candidate, answers, requirements):
     formacion_hits_raw = [c for c in formacion_list if c.lower() in text_lower]
     formacion_hits = _dedupe_specific(formacion_hits_raw)
     formacion_ok = bool(formacion_hits) if formacion_list else None
+    # Lo que el propio CV/respuestas del candidato dicen sobre su formación,
+    # se haya definido o no una lista de formación excluyente en el perfil.
+    formacion_detectada = _detect_candidate_formacion(text_lower)
 
     area_list = requirements.get("area_keywords") or []
     area_hits = _dedupe_specific([k for k in area_list if k.lower() in text_lower])
@@ -204,6 +223,7 @@ def score_candidate(candidate, answers, requirements):
         "score": score,
         "formacion_ok": formacion_ok,
         "formacion_hits": formacion_hits,
+        "formacion_detectada": formacion_detectada,
         "area_hits": area_hits,
         "industria_hits": industria_hits,
         "years_detected": years,
@@ -218,11 +238,26 @@ def score_candidate(candidate, answers, requirements):
 
 def build_note_text(result):
     prefijo = "RECHAZO. " if result.get("rechazo") else ""
+
+    detectada = result.get("formacion_detectada") or []
+    if result["formacion_ok"] is True:
+        formacion_txt = f"cumple ({', '.join(result['formacion_hits'])})"
+    elif result["formacion_ok"] is False:
+        formacion_txt = (
+            f"no cumple el requisito (CV menciona: {', '.join(detectada)})"
+            if detectada
+            else "no cumple el requisito (no se detectó formación en el CV)"
+        )
+    else:
+        formacion_txt = (
+            f"sin lista definida (CV menciona: {', '.join(detectada)})"
+            if detectada
+            else "sin lista definida (no se detectó formación en el CV)"
+        )
+
     return (
         f"{prefijo}[Filtro automático Puelche] Match {result['tier']} (puntaje {result['score']}). "
-        f"Formación excluyente: "
-        f"{'cumple' if result['formacion_ok'] else ('no detectada' if result['formacion_ok'] is False else 'sin lista definida')} "
-        f"({', '.join(result['formacion_hits']) or 'sin coincidencias'}). "
+        f"Formación: {formacion_txt}. "
         f"Señales de área/competencias: {', '.join(result['area_hits']) or 'ninguna'}. "
         f"Señales industria: {', '.join(result['industria_hits']) or 'ninguna'}. "
         f"Años detectados: {result['years_detected'] if result['years_detected'] is not None else 'no detectado'}. "
