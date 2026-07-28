@@ -16,10 +16,19 @@ o configuración de la cuenta, especialmente en add_tag()).
 """
 
 import os
+import time
+
 import requests
 
 
 class TeamTailorClient:
+    # Team Tailor limita a 50 requests cada 10 segundos. Con muchos
+    # candidatos hacemos varias llamadas por candidato (respuestas + nota),
+    # así que reintentamos con espera cuando llega un 429 y espaciamos un
+    # poco cada llamada para no volver a pasarnos del límite.
+    RATE_LIMIT_MAX_RETRIES = 5
+    MIN_DELAY_BETWEEN_REQUESTS = 0.2  # segundos
+
     def __init__(self, token=None, stack=None, api_version=None):
         self.token = token or os.environ.get("TEAMTAILOR_API_TOKEN")
         stack = (stack or os.environ.get("TEAMTAILOR_STACK", "eu")).lower()
@@ -48,12 +57,33 @@ class TeamTailorClient:
             headers["Content-Type"] = "application/vnd.api+json"
         return headers
 
+    def _request(self, method, url, **kwargs):
+        """Hace la llamada HTTP con reintento automático si Team Tailor
+        responde 429 (rate limit), y una pequeña pausa entre llamadas para
+        no volver a pasarnos del límite (50 requests / 10 segundos)."""
+        last_response = None
+        for attempt in range(self.RATE_LIMIT_MAX_RETRIES + 1):
+            time.sleep(self.MIN_DELAY_BETWEEN_REQUESTS)
+            r = requests.request(method, url, timeout=30, **kwargs)
+            last_response = r
+            if r.status_code != 429:
+                return r
+            wait_s = 2.0
+            reset_header = r.headers.get("X-Rate-Limit-Reset")
+            if reset_header:
+                try:
+                    wait_s = max(float(reset_header), 1.0)
+                except ValueError:
+                    pass
+            time.sleep(wait_s)
+        return last_response
+
     def _get(self, path, params=None):
-        r = requests.get(
+        r = self._request(
+            "GET",
             f"{self.base_url}{path}",
             headers=self._headers(),
             params=params,
-            timeout=30,
         )
         if not r.ok:
             raise RuntimeError(
@@ -62,7 +92,7 @@ class TeamTailorClient:
         return r.json()
 
     def _get_url(self, url):
-        r = requests.get(url, headers=self._headers(), timeout=30)
+        r = self._request("GET", url, headers=self._headers())
         if not r.ok:
             raise RuntimeError(
                 f"Team Tailor API error {r.status_code} en GET {url}: {r.text[:500]}"
@@ -70,11 +100,11 @@ class TeamTailorClient:
         return r.json()
 
     def _post(self, path, payload):
-        r = requests.post(
+        r = self._request(
+            "POST",
             f"{self.base_url}{path}",
             headers=self._headers(with_body=True),
             json=payload,
-            timeout=30,
         )
         if not r.ok:
             raise RuntimeError(
@@ -83,11 +113,11 @@ class TeamTailorClient:
         return r.json() if r.text else {}
 
     def _patch(self, path, payload):
-        r = requests.patch(
+        r = self._request(
+            "PATCH",
             f"{self.base_url}{path}",
             headers=self._headers(with_body=True),
             json=payload,
-            timeout=30,
         )
         if not r.ok:
             raise RuntimeError(
@@ -146,8 +176,14 @@ class TeamTailorClient:
     # ------------------------------------------------------------------
     # Candidaturas (job-applications) de una etapa
     # ------------------------------------------------------------------
-    def list_job_applications(self, job_id, stage_id):
+    def list_job_applications(self, job_id, stage_id, only_active=True):
         """Trae las candidaturas de una etapa, con el candidato incluido.
+
+        Por defecto excluye candidaturas rechazadas (atributo `rejected-at`
+        no nulo): esto se filtra localmente porque `filter[status]` de
+        job-applications no está documentado/soportado de forma confiable en
+        todas las cuentas, a diferencia del atributo `rejected-at` que sí
+        viene siempre en la respuesta.
 
         Nota: 'answers' NO es una relación válida de job-applications en la
         API de Team Tailor (solo lo son candidate, job, stage, reject-reason).
@@ -170,6 +206,9 @@ class TeamTailorClient:
             data = self._get_url(next_link)
             applications.extend(self._merge_included(data))
             next_link = data.get("links", {}).get("next")
+
+        if only_active:
+            applications = [a for a in applications if not a.get("rejected_at")]
 
         for app_data in applications:
             candidate = app_data.get("candidate")
@@ -245,6 +284,7 @@ class TeamTailorClient:
                     "job_application_id": app["id"],
                     "candidate": candidate,
                     "answers": answers,
+                    "rejected_at": app.get("attributes", {}).get("rejected-at"),
                 }
             )
         return results
@@ -274,19 +314,3 @@ class TeamTailorClient:
         atributo antes de usar esto en producción).
         """
         current = self._get(f"/candidates/{candidate_id}")
-        attrs = current.get("data", {}).get("attributes", {})
-        existing = attrs.get("tag-list") or attrs.get("tags") or []
-        if isinstance(existing, str):
-            existing_set = {t.strip() for t in existing.split(",") if t.strip()}
-        else:
-            existing_set = set(existing or [])
-        existing_set.add(tag)
-
-        payload = {
-            "data": {
-                "type": "candidates",
-                "id": candidate_id,
-                "attributes": {"tag-list": sorted(existing_set)},
-            }
-        }
-        return self._patch(f"/candidates/{candidate_id}", payload)
