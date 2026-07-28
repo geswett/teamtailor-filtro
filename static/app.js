@@ -129,15 +129,16 @@ function currentRequirements() {
   };
 }
 
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : str;
+  return div.innerHTML;
+}
+
 function renderResults(results) {
   resultsTbody.innerHTML = "";
   results.forEach((r) => {
     const tr = document.createElement("tr");
-    if (r.text_used_preview) {
-      // Tooltip con el texto que se usó para el match (útil para depurar
-      // por qué no se detectó algo, por ejemplo la renta esperada).
-      tr.title = r.text_used_preview;
-    }
 
     const tagCell = `<span class="tag ${r.tier}">${r.tier}</span>`;
     const nombre = r.candidate_name || "(sin nombre)";
@@ -147,6 +148,10 @@ function renderResults(results) {
     const nota = r.note_written
       ? "Nota escrita ✔"
       : (r.write_error ? "Error: " + r.write_error : "-");
+    // Texto de depuración: lo que el motor realmente usó para buscar
+    // coincidencias en este candidato (útil para ver por qué algo no
+    // matcheó, por ejemplo la renta esperada).
+    const debugText = escapeHtml((r.text_used_preview || "").slice(0, 300));
 
     tr.innerHTML = `
       <td>${tagCell}</td>
@@ -159,6 +164,7 @@ function renderResults(results) {
       <td>${r.renta_esperada ? r.renta_esperada.toLocaleString("es-CL") : "-"}</td>
       <td>${r.answers_count ?? "-"}</td>
       <td>${nota}</td>
+      <td style="max-width:260px; white-space:pre-wrap; font-size:11px; color:#767676;">${debugText}</td>
     `;
     resultsTbody.appendChild(tr);
   });
