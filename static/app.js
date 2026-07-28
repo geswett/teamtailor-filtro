@@ -4,7 +4,7 @@ const perfilFileInput = document.getElementById("perfil-file");
 const btnUploadPerfil = document.getElementById("btn-upload-perfil");
 const requirementsEditor = document.getElementById("requirements-editor");
 const reqFormacion = document.getElementById("req-formacion");
-const reqRrll = document.getElementById("req-rrll");
+const reqArea = document.getElementById("req-area");
 const reqIndustria = document.getElementById("req-industria");
 const reqSalarioMin = document.getElementById("req-salario-min");
 const reqSalarioMax = document.getElementById("req-salario-max");
@@ -96,7 +96,7 @@ btnUploadPerfil.addEventListener("click", async () => {
 
     const req = data.requirements;
     reqFormacion.value = (req.formacion_excluyente || []).join(", ");
-    reqRrll.value = (req.rrll_keywords || []).join(", ");
+    reqArea.value = (req.area_keywords || []).join(", ");
     reqIndustria.value = (req.industria_keywords || []).join(", ");
     reqSalarioMin.value = req.salario_min || "";
     reqSalarioMax.value = req.salario_max || "";
@@ -116,7 +116,7 @@ function currentRequirements() {
       .split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
-    rrll_keywords: reqRrll.value
+    area_keywords: reqArea.value
       .split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
@@ -154,11 +154,10 @@ function renderResults(results) {
       <td>${nombre}</td>
       <td>${r.score}</td>
       <td>${formacion}${r.formacion_hits.length ? " (" + r.formacion_hits.join(", ") + ")" : ""}</td>
-      <td>${r.rrll_hits.join(", ") || "-"}</td>
+      <td>${r.area_hits.join(", ") || "-"}</td>
       <td>${r.industria_hits.join(", ") || "-"}</td>
       <td>${r.years_detected ?? "-"}</td>
       <td>${r.renta_esperada ? r.renta_esperada.toLocaleString("es-CL") : "-"}</td>
-      <td>${r.answers_count ?? "-"}</td>
       <td>${nota}</td>
     `;
     resultsTbody.appendChild(tr);
