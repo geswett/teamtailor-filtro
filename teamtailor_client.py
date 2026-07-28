@@ -98,12 +98,16 @@ class TeamTailorClient:
     # ------------------------------------------------------------------
     # Procesos (jobs) y etapas (stages)
     # ------------------------------------------------------------------
-    def list_jobs(self, status="open"):
-        """Lista simplificada de vacantes ('procesos')."""
+ def list_jobs(self, status=None):
+        """Lista simplificada de vacantes ('procesos').
+
+        No filtramos por status vía la API: en esta cuenta de Team Tailor el
+        filtro filter[status]=open no es un valor aceptado (varía según
+        configuración de la cuenta). Traemos todos los jobs y, si se pide un
+        status, filtramos localmente sobre el atributo ya devuelto.
+        """
         jobs = []
         params = {"page[size]": 30}
-        if status:
-            params["filter[status]"] = status
         data = self._get("/jobs", params=params)
         jobs.extend(data.get("data", []))
 
@@ -113,7 +117,7 @@ class TeamTailorClient:
             jobs.extend(data.get("data", []))
             next_link = data.get("links", {}).get("next")
 
-        return [
+        result = [
             {
                 "id": j["id"],
                 "title": j.get("attributes", {}).get("title"),
@@ -121,7 +125,9 @@ class TeamTailorClient:
             }
             for j in jobs
         ]
-
+        if status:
+            result = [j for j in result if j.get("status") == status]
+        return result
     def list_stages(self, job_id):
         data = self._get("/stages", params={"filter[job]": job_id, "page[size]": 30})
         stages = data.get("data", [])
