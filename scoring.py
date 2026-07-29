@@ -14,8 +14,9 @@ Seis criterios, cada uno editable en la interfaz antes de filtrar:
   alguna, cumple; si no, sigue en la lista pero con match más bajo (no se
   rechaza).
 - Universidad: misma lógica que carrera (opcional).
-- Ciudad de residencia: una ciudad (opcional). Si no coincide, sigue en la
-  lista pero con match más bajo (no se rechaza).
+- Ciudad de residencia: una o más ciudades aceptadas (opcional). Si el
+  candidato menciona alguna, cumple; si no, sigue en la lista pero con match
+  más bajo (no se rechaza).
 - Palabras clave (hasta 3, opcional): TODAS deben aparecer en el CV o
   respuestas del candidato. Si falta alguna, el candidato sigue en la lista
   pero con match más bajo (no se rechaza).
@@ -306,17 +307,11 @@ def score_candidate(candidate, answers, requirements):
         universidades_list, text_lower, "la universidad"
     )
 
-    # --- Ciudad de residencia (opcional, baja el match si no cumple) ---
-    ciudad = (requirements.get("ciudad") or "").strip()
-    if not ciudad:
-        ciudad_ok = None
-        ciudad_status = "sin definir"
-    elif ciudad.lower() in text_lower:
-        ciudad_ok = True
-        ciudad_status = f"cumple ({ciudad})"
-    else:
-        ciudad_ok = False
-        ciudad_status = f"no cumple (no menciona {ciudad})"
+    # --- Ciudad(es) de residencia (opcional, baja el match si no cumple) ---
+    ciudades_list = requirements.get("ciudades") or []
+    ciudad_ok, ciudad_hits, ciudad_status = _keyword_match_status(
+        ciudades_list, text_lower, "la ciudad"
+    )
 
     # --- Palabras clave (hasta 3): si falta alguna, baja el match pero NO
     # se rechaza automáticamente (igual que carrera/universidad/ciudad). ---
@@ -388,6 +383,7 @@ def score_candidate(candidate, answers, requirements):
         "universidad_hits": universidad_hits,
         "universidad_status": universidad_status,
         "ciudad_ok": ciudad_ok,
+        "ciudad_hits": ciudad_hits,
         "ciudad_status": ciudad_status,
         "keywords_hits": keywords_hits,
         "keywords_status": keywords_status,
