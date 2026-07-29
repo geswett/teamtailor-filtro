@@ -160,6 +160,14 @@ class TeamTailorClient:
             result = [j for j in result if j.get("status") == status]
         return result
 
+    def get_job_title(self, job_id):
+        """Trae el título de una vacante puntual. Se usa para dejar registrado
+        a qué proceso corresponde cada nota escrita por el filtro, ya que un
+        mismo candidato puede estar postulando a varios procesos distintos a
+        la vez y sin esto no queda claro a cuál corresponde el comentario."""
+        data = self._get(f"/jobs/{job_id}")
+        return data.get("data", {}).get("attributes", {}).get("title")
+
     def list_stages(self, job_id):
         data = self._get("/stages", params={"filter[job]": job_id, "page[size]": 30})
         stages = data.get("data", [])
