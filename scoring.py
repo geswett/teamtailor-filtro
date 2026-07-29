@@ -17,7 +17,8 @@ Seis criterios, cada uno editable en la interfaz antes de filtrar:
 - Ciudad de residencia: una ciudad (opcional). Si no coincide, sigue en la
   lista pero con match más bajo (no se rechaza).
 - Palabras clave (hasta 3, opcional): TODAS deben aparecer en el CV o
-  respuestas del candidato. Si falta alguna -> RECHAZO automático.
+  respuestas del candidato. Si falta alguna, el candidato sigue en la lista
+  pero con match más bajo (no se rechaza).
 
 Un candidato "Alto"/"Medio" igual debe revisarse a mano: esto es un primer
 filtro rápido, no reemplaza el juicio del reclutador.
@@ -317,18 +318,20 @@ def score_candidate(candidate, answers, requirements):
         ciudad_ok = False
         ciudad_status = f"no cumple (no menciona {ciudad})"
 
-    # --- Palabras clave (hasta 3, TODAS obligatorias = RECHAZO si falta una) ---
+    # --- Palabras clave (hasta 3): si falta alguna, baja el match pero NO
+    # se rechaza automáticamente (igual que carrera/universidad/ciudad). ---
     keywords = [k for k in (requirements.get("palabras_clave") or []) if k][:3]
     keywords_hits = [k for k in keywords if k.lower() in text_lower]
-    keywords_rechazo = False
     if not keywords:
+        keywords_ok = None
         keywords_status = "sin definir"
     elif len(keywords_hits) == len(keywords):
+        keywords_ok = True
         keywords_status = f"cumple todas ({', '.join(keywords_hits)})"
     else:
+        keywords_ok = False
         faltantes = [k for k in keywords if k not in keywords_hits]
-        keywords_status = f"faltan: {', '.join(faltantes)}"
-        keywords_rechazo = True
+        keywords_status = f"no cumple (faltan: {', '.join(faltantes)})"
 
     # --- Puntaje y tier ---
     score = 0
@@ -348,8 +351,10 @@ def score_candidate(candidate, answers, requirements):
         score += 1
     elif ciudad_ok is False:
         score -= 1
-    if keywords_status.startswith("cumple"):
+    if keywords_ok is True:
         score += 2
+    elif keywords_ok is False:
+        score -= 1
 
     if score >= 6:
         tier = "Alto"
@@ -358,9 +363,11 @@ def score_candidate(candidate, answers, requirements):
     else:
         tier = "Bajo"
 
-    # Renta o edad fuera de margen, o falta alguna palabra clave -> RECHAZO
-    # automático, sin importar el resto del puntaje.
-    rechazo = renta_rechazo or edad_rechazo or keywords_rechazo
+    # Solo renta o edad fuera de margen producen RECHAZO automático, sin
+    # importar el resto del puntaje. Carrera, universidad, ciudad y palabras
+    # clave que no coincidan solo bajan el match (el candidato sigue en la
+    # lista, no se rechaza).
+    rechazo = renta_rechazo or edad_rechazo
     if rechazo:
         tier = "Bajo"
 
@@ -384,14 +391,17 @@ def score_candidate(candidate, answers, requirements):
         "ciudad_status": ciudad_status,
         "keywords_hits": keywords_hits,
         "keywords_status": keywords_status,
-        "keywords_rechazo": keywords_rechazo,
+        "keywords_ok": keywords_ok,
         "text_used_preview": text[:500],
     }
 
 
 def build_note_text(result):
     prefijo = "RECHAZO. " if result.get("rechazo") else ""
+    proceso = result.get("proceso_nombre")
+    proceso_linea = f"Proceso: {proceso}\n" if proceso else ""
     return (
+        f"{proceso_linea}"
         f"{prefijo}[Filtro automático Puelche] Match {result['tier']} (puntaje {result['score']}).\n"
         f"Renta esperada: {result['renta_status']}.\n"
         f"Edad: {result['edad_status']}.\n"
