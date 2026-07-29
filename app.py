@@ -82,6 +82,14 @@ def api_filtrar():
             500,
         )
 
+    # Nombre del proceso, para dejarlo registrado en la nota que se escribe
+    # en cada candidato (un mismo candidato puede estar en varios procesos a
+    # la vez, con requisitos distintos).
+    try:
+        job_title = client.get_job_title(job_id)
+    except Exception:  # noqa: BLE001
+        job_title = None
+
     results = []
     for app_data in applications:
         candidate = app_data["candidate"]
@@ -99,6 +107,7 @@ def api_filtrar():
         result["candidate_id"] = candidate["id"] if candidate else None
         result["candidate_name"] = name
         result["job_application_id"] = app_data["job_application_id"]
+        result["proceso_nombre"] = job_title
         result["write_error"] = None
         # Info de depuración: cuántas respuestas de formulario se lograron
         # traer para este candidato (ayuda a diagnosticar si el problema es
