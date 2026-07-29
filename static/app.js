@@ -4,9 +4,6 @@ const reqRentaMin = document.getElementById("req-renta-min");
 const reqRentaMax = document.getElementById("req-renta-max");
 const reqEdadMin = document.getElementById("req-edad-min");
 const reqEdadMax = document.getElementById("req-edad-max");
-const reqCarreras = document.getElementById("req-carreras");
-const reqUniversidades = document.getElementById("req-universidades");
-const reqCiudad = document.getElementById("req-ciudad");
 const reqKeywords = document.getElementById("req-keywords");
 const btnFiltrar = document.getElementById("btn-filtrar");
 const writeBackCheckbox = document.getElementById("write-back");
@@ -14,6 +11,141 @@ const statusMsg = document.getElementById("status-msg");
 const resultsSummary = document.getElementById("results-summary");
 const resultsTable = document.getElementById("results-table");
 const resultsTbody = resultsTable.querySelector("tbody");
+
+// --- Multi-select con opciones por defecto + posibilidad de agregar otras ---
+// Se usa para Carrera, Universidad y Ciudad: cada uno es un botón que abre un
+// menú con checkboxes de las opciones predefinidas, más un campo para
+// agregar una opción que no esté en la lista.
+const MULTISELECT_DEFAULTS = {
+  carreras: [
+    "Ingeniería Comercial",
+    "Ingeniería Civil Industrial",
+    "Contador Auditor",
+    "Abogado",
+    "Administración de Empresas",
+    "Ingeniería en Prevención de Riesgos",
+    "Ingeniería Acuícola",
+    "Veterinario",
+    "Ingeniería en Computación",
+    "Psicología",
+    "Ingeniero Comercio Exterior",
+  ],
+  universidades: [
+    "Universidad Católica",
+    "Universidad de Chile",
+    "Universidad Adolfo Ibáñez",
+    "Universidad de los Andes",
+    "Universidad Austral",
+    "Universidad San Sebastián",
+    "Universidad de los Lagos",
+    "Universidad Andrés Bello",
+    "Universidad del Desarrollo",
+    "Universidad de Concepción",
+    "Universidad Técnico Federico Santa María",
+  ],
+  ciudades: [
+    "Puerto Montt",
+    "Puerto Varas",
+    "Osorno",
+    "Valdivia",
+    "Temuco",
+    "Concepción",
+    "Santiago",
+    "Talca",
+    "Viña del Mar",
+    "Antofagasta",
+    "Calama",
+    "Iquique",
+    "Punta Arenas",
+    "Rancagua",
+    "Villarrica",
+    "Chiloé",
+  ],
+};
+
+const msOptions = {};
+const msSelected = {};
+
+function renderMsOptions(key) {
+  const wrapper = document.querySelector(`.ms[data-ms="${key}"]`);
+  const optionsEl = wrapper.querySelector(".ms-options");
+  optionsEl.innerHTML = "";
+  msOptions[key].forEach((opt) => {
+    const label = document.createElement("label");
+    label.className = "ms-option";
+    const checked = msSelected[key].has(opt) ? "checked" : "";
+    label.innerHTML = `<input type="checkbox" value="${opt}" ${checked}> ${opt}`;
+    optionsEl.appendChild(label);
+  });
+  updateMsButtonLabel(key);
+}
+
+function updateMsButtonLabel(key) {
+  const wrapper = document.querySelector(`.ms[data-ms="${key}"]`);
+  const btnLabel = wrapper.querySelector(".ms-btn-label");
+  const values = Array.from(msSelected[key]);
+  if (values.length === 0) btnLabel.textContent = "Sin selección";
+  else if (values.length <= 2) btnLabel.textContent = values.join(", ");
+  else btnLabel.textContent = `${values.length} seleccionadas`;
+}
+
+function closeAllMs(except) {
+  document.querySelectorAll(".ms.open").forEach((el) => {
+    if (el !== except) el.classList.remove("open");
+  });
+}
+
+function initMultiSelect(key) {
+  msOptions[key] = [...MULTISELECT_DEFAULTS[key]];
+  msSelected[key] = new Set();
+  const wrapper = document.querySelector(`.ms[data-ms="${key}"]`);
+
+  wrapper.querySelector(".ms-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const isOpen = wrapper.classList.contains("open");
+    closeAllMs();
+    if (!isOpen) wrapper.classList.add("open");
+  });
+
+  wrapper.querySelector(".ms-options").addEventListener("change", (e) => {
+    if (e.target.type !== "checkbox") return;
+    if (e.target.checked) msSelected[key].add(e.target.value);
+    else msSelected[key].delete(e.target.value);
+    updateMsButtonLabel(key);
+  });
+
+  const addInput = wrapper.querySelector(".ms-add-input");
+  const addBtn = wrapper.querySelector(".ms-add-btn");
+  const addCustom = () => {
+    const val = addInput.value.trim();
+    if (!val) return;
+    if (!msOptions[key].some((o) => o.toLowerCase() === val.toLowerCase())) {
+      msOptions[key].push(val);
+    }
+    msSelected[key].add(val);
+    addInput.value = "";
+    renderMsOptions(key);
+  };
+  addBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    addCustom();
+  });
+  addInput.addEventListener("click", (e) => e.stopPropagation());
+  addInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addCustom();
+    }
+  });
+
+  renderMsOptions(key);
+}
+
+function getMsValues(key) {
+  return Array.from(msSelected[key]);
+}
+
+document.addEventListener("click", () => closeAllMs());
 
 function setStatus(msg, isError) {
   statusMsg.textContent = msg || "";
@@ -91,9 +223,9 @@ function currentRequirements() {
     renta_max: reqRentaMax.value ? Number(reqRentaMax.value) : null,
     edad_min: reqEdadMin.value ? Number(reqEdadMin.value) : null,
     edad_max: reqEdadMax.value ? Number(reqEdadMax.value) : null,
-    carreras: splitList(reqCarreras.value).map((s) => s.toLowerCase()),
-    universidades: splitList(reqUniversidades.value).map((s) => s.toLowerCase()),
-    ciudad: reqCiudad.value.trim(),
+    carreras: getMsValues("carreras").map((s) => s.toLowerCase()),
+    universidades: getMsValues("universidades").map((s) => s.toLowerCase()),
+    ciudades: getMsValues("ciudades").map((s) => s.toLowerCase()),
     palabras_clave: splitList(reqKeywords.value, 3),
   };
 }
@@ -160,5 +292,8 @@ btnFiltrar.addEventListener("click", async () => {
   }
 });
 
+initMultiSelect("carreras");
+initMultiSelect("universidades");
+initMultiSelect("ciudades");
 loadJobs();
 updateFiltrarEnabled();
