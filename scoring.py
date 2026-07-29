@@ -1,402 +1,412 @@
 """
-Cliente simple para la API pública de Team Tailor (JSON:API).
+Motor de comparación candidato vs. requisitos definidos manualmente por el
+reclutador, basado en reglas explícitas (sin IA, sin perfil de cargo).
 
-Documentación oficial: https://docs.teamtailor.com/
-- Auth: header Authorization: Token token=<API_KEY>
-- Header obligatorio: X-Api-Version: <fecha_version>
-- Base URL EU: https://api.teamtailor.com
-- Base URL NA: https://api.na.teamtailor.com
+Seis criterios, cada uno editable en la interfaz antes de filtrar:
 
-NOTA IMPORTANTE: este cliente fue escrito siguiendo la documentación pública de
-Team Tailor, pero no pudo probarse contra una cuenta real (el entorno donde se
-escribió no tenía salida de red hacia api.teamtailor.com). Antes de usarlo en
-producción, pruébenlo primero contra una vacante de prueba y revisen los
-nombres de atributos (algunos pueden variar levemente según la versión de API
-o configuración de la cuenta, especialmente en add_tag()).
+- Renta esperada (de la respuesta del formulario): rango definido por el
+  reclutador, con un margen de tolerancia de 30% hacia arriba y hacia abajo.
+  Fuera de ese margen -> RECHAZO automático.
+- Edad (calculada desde la fecha de nacimiento): rango definido por el
+  reclutador, con un margen de tolerancia de 10% hacia arriba y hacia abajo.
+  Fuera de ese margen -> RECHAZO automático.
+- Carrera: una o más carreras aceptadas (opcional). Si el candidato menciona
+  alguna, cumple; si no, sigue en la lista pero con match más bajo (no se
+  rechaza).
+- Universidad: misma lógica que carrera (opcional).
+- Ciudad de residencia: una ciudad (opcional). Si no coincide, sigue en la
+  lista pero con match más bajo (no se rechaza).
+- Palabras clave (hasta 3, opcional): TODAS deben aparecer en el CV o
+  respuestas del candidato. Si falta alguna, el candidato sigue en la lista
+  pero con match más bajo (no se rechaza).
+
+Un candidato "Alto"/"Medio" igual debe revisarse a mano: esto es un primer
+filtro rápido, no reemplaza el juicio del reclutador.
+
+Fuentes de texto usadas por candidato (en ese orden de prioridad):
+- candidate.attributes["resume-summary"]  -> resumen de CV generado por
+  Team Tailor (Co-pilot), si ya fue generado.
+- candidate.attributes["pitch"]           -> carta de motivación / resumen
+  que el candidato dejó al postular.
+- respuestas (answers) del formulario de postulación.
 """
 
-import os
-import time
+import datetime
+import re
 
-import requests
+DIGITS_RE = re.compile(r"[^\d]")
 
 
-class TeamTailorClient:
-    # Team Tailor limita a 50 requests cada 10 segundos. Con muchos
-    # candidatos hacemos varias llamadas por candidato (respuestas + nota),
-    # así que reintentamos con espera cuando llega un 429 y espaciamos un
-    # poco cada llamada para no volver a pasarnos del límite.
-    RATE_LIMIT_MAX_RETRIES = 5
-    MIN_DELAY_BETWEEN_REQUESTS = 0.2  # segundos
+def _dedupe_specific(items):
+    """Si un ítem es substring de otro ítem más largo de la misma lista,
+    se descarta el más corto (nos quedamos con la variante más específica)."""
+    unique_sorted = sorted(set(items), key=len, reverse=True)
+    kept = []
+    for item in unique_sorted:
+        if not any(item != k and item in k for k in kept):
+            kept.append(item)
+    return sorted(kept, key=lambda i: items.index(i))
 
-    def __init__(self, token=None, stack=None, api_version=None):
-        self.token = token or os.environ.get("TEAMTAILOR_API_TOKEN")
-        stack = (stack or os.environ.get("TEAMTAILOR_STACK", "eu")).lower()
-        self.base_url = (
-            "https://api.na.teamtailor.com/v1"
-            if stack == "na"
-            else "https://api.teamtailor.com/v1"
-        )
-        self.api_version = api_version or os.environ.get(
-            "TEAMTAILOR_API_VERSION", "20240904"
-        )
 
-        if not self.token:
-            raise RuntimeError(
-                "Falta TEAMTAILOR_API_TOKEN. Configúralo en el archivo .env "
-                "(ver .env.example)."
-            )
+def _answer_text(answer):
+    if not answer:
+        return "", ""
+    attrs = answer.get("attributes", {})
+    question = str(attrs.get("question") or attrs.get("body") or "")
 
-    def _headers(self, with_body=False):
-        headers = {
-            "Authorization": f"Token token={self.token}",
-            "X-Api-Version": self.api_version,
-            "Accept": "application/vnd.api+json",
-        }
-        if with_body:
-            headers["Content-Type"] = "application/vnd.api+json"
-        return headers
+    # El valor de la respuesta puede venir en distintos atributos según el
+    # tipo de pregunta en Team Tailor: texto libre ("text"), rango numérico
+    # ("range"), selección múltiple ("choices") o sí/no ("boolean").
+    if attrs.get("text"):
+        text = str(attrs.get("text"))
+    elif attrs.get("answer"):
+        text = str(attrs.get("answer"))
+    elif attrs.get("range") is not None:
+        text = str(attrs.get("range"))
+    elif attrs.get("choices"):
+        text = ", ".join(str(c) for c in attrs.get("choices"))
+    elif attrs.get("boolean") is not None:
+        text = "Sí" if attrs.get("boolean") else "No"
+    else:
+        text = ""
 
-    def _request(self, method, url, **kwargs):
-        """Hace la llamada HTTP con reintento automático si Team Tailor
-        responde 429 (rate limit), y una pequeña pausa entre llamadas para
-        no volver a pasarnos del límite (50 requests / 10 segundos)."""
-        last_response = None
-        for attempt in range(self.RATE_LIMIT_MAX_RETRIES + 1):
-            time.sleep(self.MIN_DELAY_BETWEEN_REQUESTS)
-            r = requests.request(method, url, timeout=30, **kwargs)
-            last_response = r
-            if r.status_code != 429:
-                return r
-            wait_s = 2.0
-            reset_header = r.headers.get("X-Rate-Limit-Reset")
-            if reset_header:
-                try:
-                    wait_s = max(float(reset_header), 1.0)
-                except ValueError:
-                    pass
-            time.sleep(wait_s)
-        return last_response
+    return question, text
 
-    @staticmethod
-    def _error_message(r, method, path):
-        body = r.text[:500] if r.text else "(cuerpo vacío)"
-        content_type = r.headers.get("Content-Type", "?")
-        return (
-            f"Team Tailor API error {r.status_code} {r.reason or ''} en {method} {path}. "
-            f"Content-Type respuesta: {content_type}. Cuerpo: {body}"
-        )
 
-    def _get(self, path, params=None):
-        r = self._request(
-            "GET",
-            f"{self.base_url}{path}",
-            headers=self._headers(),
-            params=params,
-        )
-        if not r.ok:
-            raise RuntimeError(self._error_message(r, "GET", path))
-        return r.json()
+def _candidate_text(candidate, answers):
+    parts = []
+    if candidate:
+        attrs = candidate.get("attributes", {})
+        for field in ("resume-summary", "pitch"):
+            val = attrs.get(field)
+            if val:
+                parts.append(str(val))
+    for a in answers:
+        _, text = _answer_text(a)
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
 
-    def _get_url(self, url):
-        r = self._request("GET", url, headers=self._headers())
-        if not r.ok:
-            raise RuntimeError(self._error_message(r, "GET", url))
-        return r.json()
 
-    def _post(self, path, payload):
-        r = self._request(
-            "POST",
-            f"{self.base_url}{path}",
-            headers=self._headers(with_body=True),
-            json=payload,
-        )
-        if not r.ok:
-            raise RuntimeError(self._error_message(r, "POST", path))
-        return r.json() if r.text else {}
+SALARY_QUESTION_KEYWORDS = [
+    "renta",
+    "sueldo",
+    "pretensión",
+    "pretension",
+    "expectativa salarial",
+    "expectativas salariales",
+    "aspiración salarial",
+    "aspiracion salarial",
+    "remuneración",
+    "remuneracion",
+    "salario",
+    "líquido esperado",
+    "liquido esperado",
+]
 
-    def _patch(self, path, payload):
-        r = self._request(
-            "PATCH",
-            f"{self.base_url}{path}",
-            headers=self._headers(with_body=True),
-            json=payload,
-        )
-        if not r.ok:
-            raise RuntimeError(self._error_message(r, "PATCH", path))
-        return r.json() if r.text else {}
 
-    # ------------------------------------------------------------------
-    # Procesos (jobs) y etapas (stages)
-    # ------------------------------------------------------------------
-    def list_jobs(self, status=None):
-        """Lista simplificada de vacantes ('procesos').
+def _extract_salary(answers):
+    for a in answers:
+        question, text = _answer_text(a)
+        q_lower = question.lower()
+        if any(kw in q_lower for kw in SALARY_QUESTION_KEYWORDS):
+            digits = DIGITS_RE.sub("", text)
+            if digits.isdigit() and len(digits) >= 6:
+                return int(digits)
+    return None
 
-        No filtramos por status vía la API: en esta cuenta de Team Tailor el
-        filtro filter[status]=open no es un valor aceptado (varía según
-        configuración de la cuenta). Traemos todos los jobs y, si se pide un
-        status, filtramos localmente sobre el atributo ya devuelto.
-        """
-        jobs = []
-        params = {"page[size]": 30}
-        data = self._get("/jobs", params=params)
-        jobs.extend(data.get("data", []))
 
-        next_link = data.get("links", {}).get("next")
-        while next_link:
-            data = self._get_url(next_link)
-            jobs.extend(data.get("data", []))
-            next_link = data.get("links", {}).get("next")
+BIRTHDATE_QUESTION_KEYWORDS = [
+    "fecha de nacimiento",
+    "fecha nacimiento",
+    "nacimiento",
+    "date of birth",
+    "birthday",
+]
 
-        result = [
-            {
-                "id": j["id"],
-                "title": j.get("attributes", {}).get("title"),
-                "status": j.get("attributes", {}).get("status"),
-            }
-            for j in jobs
-        ]
-        if status:
-            result = [j for j in result if j.get("status") == status]
-        return result
+AGE_QUESTION_KEYWORDS = ["edad", "age"]
 
-    def get_job_title(self, job_id):
-        """Trae el título de una vacante puntual. Se usa para dejar registrado
-        a qué proceso corresponde cada nota escrita por el filtro, ya que un
-        mismo candidato puede estar postulando a varios procesos distintos a
-        la vez y sin esto no queda claro a cuál corresponde el comentario."""
-        data = self._get(f"/jobs/{job_id}")
-        return data.get("data", {}).get("attributes", {}).get("title")
+# Formatos de fecha comunes en la respuesta de "fecha de nacimiento"
+# (dd/mm/aaaa, dd-mm-aaaa, aaaa-mm-dd, aaaa/mm/dd).
+DATE_PATTERNS = [
+    ("%d/%m/%Y", re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")),
+    ("%d-%m-%Y", re.compile(r"^\d{1,2}-\d{1,2}-\d{4}$")),
+    ("%Y-%m-%d", re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")),
+    ("%Y/%m/%d", re.compile(r"^\d{4}/\d{1,2}/\d{1,2}$")),
+]
 
-    def list_stages(self, job_id):
-        data = self._get("/stages", params={"filter[job]": job_id, "page[size]": 30})
-        stages = data.get("data", [])
-        return [
-            {
-                "id": s["id"],
-                "name": s.get("attributes", {}).get("name"),
-                "active_count": s.get("attributes", {}).get(
-                    "active-job-applications-count"
-                ),
-            }
-            for s in stages
-        ]
 
-    # ------------------------------------------------------------------
-    # Candidaturas (job-applications) de una etapa
-    # ------------------------------------------------------------------
-    def list_job_applications(self, job_id, stage_id, only_active=True):
-        """Trae las candidaturas de una etapa, con el candidato incluido.
-
-        Por defecto excluye candidaturas rechazadas (atributo `rejected-at`
-        no nulo): esto se filtra localmente porque `filter[status]` de
-        job-applications no está documentado/soportado de forma confiable en
-        todas las cuentas, a diferencia del atributo `rejected-at` que sí
-        viene siempre en la respuesta.
-
-        Nota: 'answers' NO es una relación válida de job-applications en la
-        API de Team Tailor (solo lo son candidate, job, stage, reject-reason).
-        Las respuestas del formulario de postulación viven en el candidato
-        (relación 'answers' de /candidates/{id}), así que se piden aparte,
-        una consulta por candidato, vía get_candidate_answers().
-        """
-        applications = []
-        params = {
-            "filter[job]": job_id,
-            "filter[stage]": stage_id,
-            "include": "candidate",
-            "page[size]": 30,
-        }
-        data = self._get("/job-applications", params=params)
-        applications.extend(self._merge_included(data))
-
-        next_link = data.get("links", {}).get("next")
-        while next_link:
-            data = self._get_url(next_link)
-            applications.extend(self._merge_included(data))
-            next_link = data.get("links", {}).get("next")
-
-        if only_active:
-            applications = [a for a in applications if not a.get("rejected_at")]
-
-        for app_data in applications:
-            candidate = app_data.get("candidate")
-            if candidate:
-                try:
-                    app_data["answers"] = self.get_candidate_answers(candidate["id"])
-                except Exception:
-                    app_data["answers"] = []
-            else:
-                app_data["answers"] = []
-
-        return applications
-
-    def get_candidate_answers(self, candidate_id):
-        """Trae las respuestas del formulario de postulación de un candidato,
-        con el texto de la pregunta ya incrustado en attributes['question']
-        (para que scoring.py pueda leerlo directo).
-
-        IMPORTANTE (rendimiento): la relación 'question' de cada answer NO
-        trae un 'data' (id/type) inline, solo un link 'related' distinto por
-        cada respuesta (ej. /v1/answers/{id}/question). Seguir ese link una
-        vez por respuesta no funciona en la práctica: con decenas de
-        respuestas por candidato, hacerlo para varios candidatos dispara
-        cientos de llamadas adicionales y el servidor termina respondiendo
-        con timeout (504) antes de que Team Tailor complete todo.
-
-        En su lugar, se emparejan 'answers' y 'questions' por POSICIÓN: la
-        relación 'questions' del candidato viene en el mismo orden que
-        'answers' (el candidato responde las preguntas del formulario en
-        orden). Esto no hace ninguna llamada adicional."""
-        data = self._get(
-            f"/candidates/{candidate_id}", params={"include": "answers,questions"}
-        )
-        included = data.get("included", [])
-        included_map = {(i["type"], i["id"]): i for i in included}
-        candidate_data = data.get("data", {})
-        relationships = candidate_data.get("relationships", {})
-        answer_refs = relationships.get("answers", {}).get("data", []) or []
-        question_refs = relationships.get("questions", {}).get("data", []) or []
-
-        results = []
-        for i, ref in enumerate(answer_refs):
-            answer = included_map.get((ref["type"], ref["id"]))
-            if not answer:
+def _parse_date(text):
+    text = (text or "").strip()
+    for fmt, pattern in DATE_PATTERNS:
+        if pattern.match(text):
+            try:
+                return datetime.datetime.strptime(text, fmt).date()
+            except ValueError:
                 continue
+    return None
 
-            question = None
-            # 1) intento directo: si el answer trajera 'data' en su relación
-            #    'question' (no debería, pero por si acaso en otras cuentas).
-            q_ref = (answer.get("relationships", {}).get("question", {}) or {}).get(
-                "data"
-            )
-            if q_ref:
-                question = included_map.get((q_ref["type"], q_ref["id"]))
-            # 2) fallback sin llamadas extra: emparejar por posición con la
-            #    lista de 'questions' del candidato (mismo orden que answers).
-            if question is None and i < len(question_refs):
-                qref = question_refs[i]
-                question = included_map.get((qref["type"], qref["id"]))
 
-            q_attrs = question.get("attributes", {}) if question else {}
-            question_text = (
-                q_attrs.get("body") or q_attrs.get("title") or q_attrs.get("text") or ""
-            )
+def _age_from_birthdate(birthdate):
+    today = datetime.date.today()
+    return today.year - birthdate.year - (
+        (today.month, today.day) < (birthdate.month, birthdate.day)
+    )
 
-            answer_copy = dict(answer)
-            attrs_copy = dict(answer.get("attributes", {}))
-            attrs_copy["question"] = question_text
-            answer_copy["attributes"] = attrs_copy
-            results.append(answer_copy)
 
-        return results
+def _extract_age(candidate, answers):
+    # 1) Si hay una respuesta directa a "Edad" que sea un número, se usa tal
+    # cual (evita depender de que exista una pregunta de fecha de nacimiento).
+    for a in answers:
+        question, text = _answer_text(a)
+        q_lower = question.lower()
+        if any(kw in q_lower for kw in AGE_QUESTION_KEYWORDS):
+            digits = DIGITS_RE.sub("", text)
+            if digits.isdigit() and 0 < int(digits) < 100:
+                return int(digits)
 
-    @staticmethod
-    def _merge_included(data):
-        included = {(i["type"], i["id"]): i for i in data.get("included", [])}
-        results = []
-        for app in data.get("data", []):
-            candidate_ref = (
-                app.get("relationships", {}).get("candidate", {}).get("data")
-            )
-            candidate = (
-                included.get((candidate_ref["type"], candidate_ref["id"]))
-                if candidate_ref
-                else None
-            )
-            answer_refs = (
-                app.get("relationships", {}).get("answers", {}).get("data", []) or []
-            )
-            answers = [included.get((a["type"], a["id"])) for a in answer_refs]
-            answers = [a for a in answers if a]
-            results.append(
-                {
-                    "job_application_id": app["id"],
-                    "candidate": candidate,
-                    "answers": answers,
-                    "rejected_at": app.get("attributes", {}).get("rejected-at"),
-                }
-            )
-        return results
+    # 2) Si hay una pregunta de fecha de nacimiento, se calcula la edad.
+    for a in answers:
+        question, text = _answer_text(a)
+        q_lower = question.lower()
+        if any(kw in q_lower for kw in BIRTHDATE_QUESTION_KEYWORDS):
+            birthdate = _parse_date(text)
+            if birthdate:
+                return _age_from_birthdate(birthdate)
 
-    # ------------------------------------------------------------------
-    # Escritura de vuelta hacia Team Tailor
-    # ------------------------------------------------------------------
-    def list_users(self):
-        """Lista simplificada de usuarios internos de la cuenta (para poder
-        asignar autor a las notas que crea la app)."""
-        data = self._get("/users", params={"page[size]": 30})
-        return [
-            {
-                "id": u["id"],
-                "name": u.get("attributes", {}).get("name"),
-                "role": u.get("attributes", {}).get("role"),
-            }
-            for u in data.get("data", [])
-        ]
+    # 3) Respaldo: si el candidato trae un atributo nativo de fecha de
+    # nacimiento (poco común, pero puede darse con integraciones externas).
+    if candidate:
+        attrs = candidate.get("attributes", {})
+        for field in ("date-of-birth", "birthday", "birth-date"):
+            val = attrs.get(field)
+            if val:
+                birthdate = _parse_date(str(val)[:10].replace("T", "-"))
+                if birthdate:
+                    return _age_from_birthdate(birthdate)
+    return None
 
-    def _get_default_user_id(self):
-        """Busca un usuario para usar como autor de las notas creadas por la
-        app (preferentemente un admin). Se cachea tras la primera consulta."""
-        if getattr(self, "_default_user_id", None) is not None:
-            return self._default_user_id
-        try:
-            users = self.list_users()
-        except Exception:
-            users = []
-        chosen = next((u for u in users if u.get("role") == "admin"), None) or (
-            users[0] if users else None
-        )
-        self._default_user_id = chosen["id"] if chosen else None
-        return self._default_user_id
 
-    def add_note(self, candidate_id, body):
-        """Agrega un comentario/nota visible en la ficha del candidato.
+# Palabras cuya terminación varía por género y que suelen encabezar el
+# nombre de una carrera. Si el reclutador escribe "ingeniería comercial" y
+# el CV dice "Ingeniero Comercial", igual debe contar como coincidencia.
+CAREER_GENDER_VARIANTS = {
+    "ingeniería": ["ingenier[íi]a", "ingeniero", "ingeniera"],
+    "ingeniero": ["ingenier[íi]a", "ingeniero", "ingeniera"],
+    "ingeniera": ["ingenier[íi]a", "ingeniero", "ingeniera"],
+    "licenciatura": ["licenciatura", "licenciado", "licenciada"],
+    "licenciado": ["licenciatura", "licenciado", "licenciada"],
+    "licenciada": ["licenciatura", "licenciado", "licenciada"],
+    "técnico": ["técnico", "técnica"],
+    "técnica": ["técnico", "técnica"],
+    "contador": ["contador", "contadora"],
+    "contadora": ["contador", "contadora"],
+    "administrador": ["administrador", "administradora"],
+    "administradora": ["administrador", "administradora"],
+    "psicólogo": ["psicólogo", "psicóloga"],
+    "psicóloga": ["psicólogo", "psicóloga"],
+    "abogado": ["abogado", "abogada"],
+    "abogada": ["abogado", "abogada"],
+    "arquitecto": ["arquitecto", "arquitecta"],
+    "arquitecta": ["arquitecto", "arquitecta"],
+    "diseñador": ["diseñador", "diseñadora"],
+    "diseñadora": ["diseñador", "diseñadora"],
+}
 
-        Según la documentación de Team Tailor, el atributo del texto de la
-        nota se llama 'note' (no 'text'). El ejemplo oficial de creación de
-        notas también manda una relación 'user' (quién crea la nota); si no
-        se manda, algunas cuentas rechazan la petición con un 400 sin
-        detalle. Por eso se busca un usuario (de preferencia admin) y se
-        incluye automáticamente.
-        """
-        relationships = {"candidate": {"data": {"type": "candidates", "id": candidate_id}}}
 
-        user_id = self._get_default_user_id()
-        if user_id:
-            relationships["user"] = {"data": {"type": "users", "id": user_id}}
+def _flexible_phrase_regex(phrase):
+    """Arma un patrón que ignora la variación de género en palabras como
+    ingeniero/a, licenciado/a, técnico/a, etc., para que 'ingeniería
+    comercial' matchee tanto 'Ingeniero Comercial' como 'Ingeniera
+    Comercial' en el CV."""
+    words = [w for w in phrase.strip().split() if w]
+    if not words:
+        return None
+    parts = []
+    for w in words:
+        variants = CAREER_GENDER_VARIANTS.get(w.lower())
+        parts.append("(?:" + "|".join(variants) + ")" if variants else re.escape(w))
+    try:
+        return re.compile(r"\b" + r"\s+".join(parts) + r"\b", re.IGNORECASE)
+    except re.error:
+        return None
 
-        payload = {
-            "data": {
-                "type": "notes",
-                "attributes": {"note": body},
-                "relationships": relationships,
-            }
-        }
-        return self._post("/notes", payload)
 
-    def add_tag(self, candidate_id, tag):
-        """Intenta agregar una etiqueta al candidato.
+def _keyword_match_status(candidate_list, text_lower, label_singular):
+    """Para Carrera/Universidad: si la lista está vacía, el campo no aplica
+    (None). Si el candidato menciona alguna, cumple (True). Si no, no cumple
+    (False), pero eso NO implica rechazo, solo baja el puntaje."""
+    if not candidate_list:
+        return None, [], "sin definir"
+    hits = []
+    for item in candidate_list:
+        if item.lower() in text_lower:
+            hits.append(item)
+            continue
+        pattern = _flexible_phrase_regex(item)
+        if pattern and pattern.search(text_lower):
+            hits.append(item)
+    hits = _dedupe_specific(hits)
+    if hits:
+        return True, hits, f"cumple ({', '.join(hits)})"
+    return False, [], f"no cumple ({label_singular} no detectada en el CV)"
 
-        Team Tailor maneja etiquetas de candidato como una lista de strings.
-        Esto puede requerir ajuste según la versión/cuenta real (revisar
-        respuesta de GET /candidates/{id} para confirmar el nombre exacto del
-        atributo antes de usar esto en producción).
-        """
-        current = self._get(f"/candidates/{candidate_id}")
-        attrs = current.get("data", {}).get("attributes", {})
-        existing = attrs.get("tag-list") or attrs.get("tags") or []
-        if isinstance(existing, str):
-            existing_set = {t.strip() for t in existing.split(",") if t.strip()}
+
+def score_candidate(candidate, answers, requirements):
+    text = _candidate_text(candidate, answers)
+    text_lower = text.lower()
+
+    # --- Renta esperada (margen 30%, fuera de rango = RECHAZO) ---
+    renta = _extract_salary(answers)
+    renta_min = requirements.get("renta_min")
+    renta_max = requirements.get("renta_max")
+    renta_rechazo = False
+    if renta_min is None and renta_max is None:
+        renta_status = "sin rango definido"
+    elif renta is None:
+        renta_status = "no informada"
+    else:
+        lo = (renta_min * 0.7) if renta_min is not None else None
+        hi = (renta_max * 1.3) if renta_max is not None else None
+        dentro = (lo is None or renta >= lo) and (hi is None or renta <= hi)
+        renta_fmt = f"{renta:,.0f}".replace(",", ".")
+        if dentro:
+            renta_status = f"cumple ({renta_fmt})"
         else:
-            existing_set = set(existing or [])
-        existing_set.add(tag)
+            renta_status = f"fuera de rango ({renta_fmt})"
+            renta_rechazo = True
 
-        payload = {
-            "data": {
-                "type": "candidates",
-                "id": candidate_id,
-                "attributes": {"tag-list": sorted(existing_set)},
-            }
-        }
-        return self._patch(f"/candidates/{candidate_id}", payload)
+    # --- Edad (margen 10%, fuera de rango = RECHAZO) ---
+    edad = _extract_age(candidate, answers)
+    edad_min = requirements.get("edad_min")
+    edad_max = requirements.get("edad_max")
+    edad_rechazo = False
+    if edad_min is None and edad_max is None:
+        edad_status = "sin rango definido"
+    elif edad is None:
+        edad_status = "no informada"
+    else:
+        lo = (edad_min * 0.9) if edad_min is not None else None
+        hi = (edad_max * 1.1) if edad_max is not None else None
+        dentro = (lo is None or edad >= lo) and (hi is None or edad <= hi)
+        if dentro:
+            edad_status = f"cumple ({edad} años)"
+        else:
+            edad_status = f"fuera de rango ({edad} años)"
+            edad_rechazo = True
+
+    # --- Carrera / Universidad (opcionales, bajan el match si no cumplen) ---
+    carreras_list = requirements.get("carreras") or []
+    carrera_ok, carrera_hits, carrera_status = _keyword_match_status(
+        carreras_list, text_lower, "la carrera"
+    )
+
+    universidades_list = requirements.get("universidades") or []
+    universidad_ok, universidad_hits, universidad_status = _keyword_match_status(
+        universidades_list, text_lower, "la universidad"
+    )
+
+    # --- Ciudad de residencia (opcional, baja el match si no cumple) ---
+    ciudad = (requirements.get("ciudad") or "").strip()
+    if not ciudad:
+        ciudad_ok = None
+        ciudad_status = "sin definir"
+    elif ciudad.lower() in text_lower:
+        ciudad_ok = True
+        ciudad_status = f"cumple ({ciudad})"
+    else:
+        ciudad_ok = False
+        ciudad_status = f"no cumple (no menciona {ciudad})"
+
+    # --- Palabras clave (hasta 3): si falta alguna, baja el match pero NO
+    # se rechaza automáticamente (igual que carrera/universidad/ciudad). ---
+    keywords = [k for k in (requirements.get("palabras_clave") or []) if k][:3]
+    keywords_hits = [k for k in keywords if k.lower() in text_lower]
+    if not keywords:
+        keywords_ok = None
+        keywords_status = "sin definir"
+    elif len(keywords_hits) == len(keywords):
+        keywords_ok = True
+        keywords_status = f"cumple todas ({', '.join(keywords_hits)})"
+    else:
+        keywords_ok = False
+        faltantes = [k for k in keywords if k not in keywords_hits]
+        keywords_status = f"no cumple (faltan: {', '.join(faltantes)})"
+
+    # --- Puntaje y tier ---
+    score = 0
+    if renta_status.startswith("cumple"):
+        score += 2
+    if edad_status.startswith("cumple"):
+        score += 1
+    if carrera_ok is True:
+        score += 2
+    elif carrera_ok is False:
+        score -= 1
+    if universidad_ok is True:
+        score += 1
+    elif universidad_ok is False:
+        score -= 1
+    if ciudad_ok is True:
+        score += 1
+    elif ciudad_ok is False:
+        score -= 1
+    if keywords_ok is True:
+        score += 2
+    elif keywords_ok is False:
+        score -= 1
+
+    if score >= 6:
+        tier = "Alto"
+    elif score >= 3:
+        tier = "Medio"
+    else:
+        tier = "Bajo"
+
+    # Solo renta o edad fuera de margen producen RECHAZO automático, sin
+    # importar el resto del puntaje. Carrera, universidad, ciudad y palabras
+    # clave que no coincidan solo bajan el match (el candidato sigue en la
+    # lista, no se rechaza).
+    rechazo = renta_rechazo or edad_rechazo
+    if rechazo:
+        tier = "Bajo"
+
+    return {
+        "tier": tier,
+        "score": score,
+        "rechazo": rechazo,
+        "renta_esperada": renta,
+        "renta_status": renta_status,
+        "renta_rechazo": renta_rechazo,
+        "edad_detectada": edad,
+        "edad_status": edad_status,
+        "edad_rechazo": edad_rechazo,
+        "carrera_ok": carrera_ok,
+        "carrera_hits": carrera_hits,
+        "carrera_status": carrera_status,
+        "universidad_ok": universidad_ok,
+        "universidad_hits": universidad_hits,
+        "universidad_status": universidad_status,
+        "ciudad_ok": ciudad_ok,
+        "ciudad_status": ciudad_status,
+        "keywords_hits": keywords_hits,
+        "keywords_status": keywords_status,
+        "keywords_ok": keywords_ok,
+        "text_used_preview": text[:500],
+    }
+
+
+def build_note_text(result):
+    prefijo = "RECHAZO. " if result.get("rechazo") else ""
+    proceso = result.get("proceso_nombre")
+    proceso_linea = f"Proceso: {proceso}\n" if proceso else ""
+    return (
+        f"{proceso_linea}"
+        f"{prefijo}[Filtro automático Puelche] Match {result['tier']} (puntaje {result['score']}).\n"
+        f"Renta esperada: {result['renta_status']}.\n"
+        f"Edad: {result['edad_status']}.\n"
+        f"Carrera: {result['carrera_status']}.\n"
+        f"Universidad: {result['universidad_status']}.\n"
+        f"Ciudad de residencia: {result['ciudad_status']}.\n"
+        f"Palabras clave: {result['keywords_status']}."
+    )
