@@ -107,6 +107,14 @@ function initMultiSelect(key) {
     if (!isOpen) wrapper.classList.add("open");
   });
 
+  // Cualquier click DENTRO del menú (marcar un checkbox, hacer click en la
+  // etiqueta, escribir en "agregar otra", etc.) no debe burbujear hasta el
+  // listener global de document que cierra los menús abiertos — si no, el
+  // menú se cerraba apenas se marcaba la primera opción.
+  wrapper.querySelector(".ms-menu").addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+
   wrapper.querySelector(".ms-options").addEventListener("change", (e) => {
     if (e.target.type !== "checkbox") return;
     if (e.target.checked) msSelected[key].add(e.target.value);
