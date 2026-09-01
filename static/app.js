@@ -300,8 +300,23 @@ btnFiltrar.addEventListener("click", async () => {
   }
 });
 
-initMultiSelect("carreras");
-initMultiSelect("universidades");
-initMultiSelect("ciudades");
-loadJobs();
-updateFiltrarEnabled();
+// La app solo arranca (trae procesos desde Team Tailor, arma los
+// multi-select, etc.) después de pasar la pantalla de clave. Si la sesión
+// ya estaba autenticada (sessionStorage), el script de la pantalla de clave
+// en index.html llama a window.startApp() de inmediato; si no, queda a la
+// espera de que el usuario ingrese la clave correcta.
+let appStarted = false;
+function startApp() {
+  if (appStarted) return;
+  appStarted = true;
+  initMultiSelect("carreras");
+  initMultiSelect("universidades");
+  initMultiSelect("ciudades");
+  loadJobs();
+  updateFiltrarEnabled();
+}
+window.startApp = startApp;
+
+if (sessionStorage.getItem("puelche_auth") === "ok") {
+  startApp();
+}
