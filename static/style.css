@@ -185,6 +185,70 @@ select:focus, input:focus {
   color: var(--text2);
 }
 
+.hidden {
+  display: none !important;
+}
+
+/* LOCK SCREEN (clave de acceso) */
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  padding: 20px;
+}
+
+.lock-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 36px 32px;
+  width: 100%;
+  max-width: 320px;
+  text-align: center;
+}
+
+.lock-logo {
+  height: 40px;
+  width: auto;
+  margin: 0 auto 18px;
+  display: block;
+}
+
+.lock-card h1 {
+  font-size: 16px;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.lock-card p {
+  font-size: 13px;
+  color: var(--text2);
+  margin-bottom: 16px;
+}
+
+.lock-card input[type="password"] {
+  width: 100%;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.lock-card .btn {
+  width: 100%;
+}
+
+.lock-error {
+  color: var(--red);
+  font-size: 12px;
+  min-height: 16px;
+  margin-top: 10px;
+  margin-bottom: 0 !important;
+}
+
 /* MULTI-SELECT (carrera / universidad / ciudad) */
 .ms {
   position: relative;
